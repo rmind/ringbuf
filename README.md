@@ -13,11 +13,12 @@ distributed under the 2-clause BSD license.
   * Destroy the ring buffer object.
 
 * `int ringbuf_register(ringbuf_t *rbuf)`
-  * Register the current thread as a producer.
+  * Register the current thread as a producer.  Each producer must register.
 
 * `ssize_t ringbuf_acquire(ringbuf_t *rbuf, size_t len)`
   * Request a space of a given length in the ring buffer.  On success,
-  returns the offset at which the space is available; and -1 on failure.
+  returns the offset at which the space is available.  On failure,
+  returns -1.
 
 * `size_t ringbuf_consume(ringbuf_t *rbuf, size_t *offset)`
   * Get a contiguous range which is ready to be consumed.
@@ -33,6 +34,9 @@ distributed under the 2-clause BSD license.
 
 Producers:
 ```c
+if (ringbuf_register(r) == -1)
+	err(EXIT_FAILURE, "ringbuf_register")
+...
 if ((off = ringbuf_acquire(r, len)) != -1) {
 	memcpy(&buf[off], payload, len);
 	ringbuf_produce(r);
