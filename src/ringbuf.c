@@ -151,6 +151,7 @@ ringbuf_destroy(ringbuf_t *rbuf)
 	pthread_key_delete(rbuf->tls_key);
 	free(rbuf);
 }
+
 /*
  * stable_nextoff: capture and return a stable value of the 'next' offset.
  */
