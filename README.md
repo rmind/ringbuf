@@ -17,17 +17,23 @@ distributed under the 2-clause BSD license.
 
 * `ssize_t ringbuf_acquire(ringbuf_t *rbuf, size_t len)`
   * Request a space of a given length in the ring buffer.  Returns the
-  offset at which the space is available or -1 on failure.
-
-* `size_t ringbuf_consume(ringbuf_t *rbuf, size_t *offset)`
-  * Get a contiguous range which is ready to be consumed.
+  offset at which the space is available or -1 on failure.  Once the data
+  is ready (typically, when writing to the ring buffer is complete), the
+  `ringbuf_produce` function must be called to indicate that.
 
 * `void ringbuf_produce(ringbuf_t *rbuf)`
   * Indicate the acquired range in the buffer is produced and is ready
   to be consumed.
 
+* `size_t ringbuf_consume(ringbuf_t *rbuf, size_t *offset)`
+  * Get a contiguous range which is ready to be consumed.  Returns zero
+  if there is no data available for consumption.  Once the data is
+  consumed (typically, when reading from the ring buffer is complete),
+  the `ringbuf_release` function must be called to indicate that.
+
 * `void ringbuf_release(ringbuf_t *rbuf, size_t nbytes)`
-  * Indicate that the consumed range can now be released.
+  * Indicate that the consumed range can now be released and may now be
+  reused by the producers.
 
 ## Example
 
