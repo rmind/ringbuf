@@ -22,7 +22,7 @@ distributed under the 2-clause BSD license.
   `ringbuf_produce` function must be called to indicate that.
 
 * `void ringbuf_produce(ringbuf_t *rbuf)`
-  * Indicate the acquired range in the buffer is produced and is ready
+  * Indicate that the acquired range in the buffer is produced and is ready
   to be consumed.
 
 * `size_t ringbuf_consume(ringbuf_t *rbuf, size_t *offset)`
@@ -34,6 +34,17 @@ distributed under the 2-clause BSD license.
 * `void ringbuf_release(ringbuf_t *rbuf, size_t nbytes)`
   * Indicate that the consumed range can now be released and may now be
   reused by the producers.
+
+## Caveats
+
+This ring buffer implementation always provides a contiguous range of
+space for the producer.  It is achieved by early an wrap-around if the
+requested range cannot fit in the end.  The implication of this is the
+`ringbuf_acquire` call may fail if the requested range is greater than
+half of the buffer size.
+
+Hence, it may be necessary to ensure that the ring buffer size is at
+least twice as large as the maximum production unit size.
 
 ## Example
 

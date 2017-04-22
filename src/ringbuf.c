@@ -218,7 +218,7 @@ ringbuf_acquire(ringbuf_t *rbuf, size_t len)
 			/*
 			 * Wrap-around and start from the beginning.
 			 *
-			 * If we would exceed the buffer, the attempt to
+			 * If we would exceed the buffer, then attempt to
 			 * acquire the WRAP_LOCK_BIT and use the space in
 			 * the beginning.  If we used all space exactly to
 			 * the end, then reset to 0.
@@ -236,7 +236,6 @@ ringbuf_acquire(ringbuf_t *rbuf, size_t len)
 			/* Preserve the wrap-around counter. */
 			target |= seen & WRAP_COUNTER;
 		}
-
 	} while (!atomic_compare_exchange_weak(&rbuf->next, seen, target));
 
 	/*
@@ -255,6 +254,7 @@ ringbuf_acquire(ringbuf_t *rbuf, size_t len)
 		 */
 		atomic_thread_fence(memory_order_release);
 		rbuf->next = (target & ~WRAP_LOCK_BIT);
+		next = 0;
 	}
 	ASSERT((target & RBUF_OFF_MASK) <= rbuf->space);
 	return (ssize_t)next;
