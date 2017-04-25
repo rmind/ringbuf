@@ -12,17 +12,19 @@ distributed under the 2-clause BSD license.
   the space for this object.  Typically, the object would be allocated
   dynamically if using threads or reserved in a shared memory blocked if
   using processes.  The allocation size for the object shall be obtained
-  using the `ringbuf_get_sizes` function.
+  using the `ringbuf_get_sizes` function.  Returns 0 on success and -1
+  on failure.
 
 * `void ringbuf_get_sizes(size_t *ringbuf_size, size_t *ringbuf_local_size)`
-  * Returns the size of the opaque `ringbuf_t` and ringbuf_local_t` structures.
+  * Returns the size of the opaque `ringbuf_t` and `ringbuf_local_t` structures.
 
 * `int ringbuf_register(ringbuf_t *rbuf, ringbuf_local_t *rbuf_local)`
   * Register the current thread or process as a producer.  Each producer
   must register itself.  The `rbuf_local` is a pointer to an opauqe object
   storing information local to the producer, but accessible by the consumer.
   If using threads, this would be equivalent to the thread-local store (TLS);
-  if using processes, this would typically be in shared memory.
+  if using processes, this would typically be in shared memory.  Returns 0
+  on success and -1 on failure.
 
 * `ssize_t ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *rbuf_local, size_t len)`
   * Request a space of a given length in the ring buffer.  Returns the
