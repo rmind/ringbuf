@@ -32,51 +32,16 @@
  *	@(#)cdefs.h	8.8 (Berkeley) 1/9/95
  */
 
-/*
- * Various helper macros.  Portions are taken from NetBSD's sys/cdefs.h
- * and sys/param.h headers.
- */
+#ifndef _UTILS_H_
+#define _UTILS_H_
 
-#ifndef	_UTILS_H_
-#define	_UTILS_H_
-
-#include <stdbool.h>
-#include <inttypes.h>
-#include <limits.h>
 #include <assert.h>
 
-#ifndef __predict_true
-#define	__predict_true(x)	__builtin_expect((x) != 0, 1)
-#define	__predict_false(x)	__builtin_expect((x) != 0, 0)
-#endif
-
-#ifndef __constructor
-#define	__constructor		__attribute__((constructor))
-#endif
-
-#ifndef __packed
-#define	__packed		__attribute__((__packed__))
-#endif
-
-#ifndef __aligned
-#define	__aligned(x)		__attribute__((__aligned__(x)))
-#endif
-
-#ifndef __unused
-#define	__unused		__attribute__((__unused__))
-#endif
-
-#ifndef __arraycount
-#define	__arraycount(__x)	(sizeof(__x) / sizeof(__x[0]))
-#endif
-
-#ifndef __UNCONST
-#define	__UNCONST(a)		((void *)(unsigned long)(const void *)(a))
-#endif
-
-#ifndef container_of
-#define	container_of(PTR, TYPE, FIELD)					\
-    ((TYPE *)(((char *)(PTR)) - offsetof(TYPE, FIELD)))
+/*
+ * A regular assert (debug/diagnostic only).
+ */
+#if !defined(ASSERT)
+#define	ASSERT		assert
 #endif
 
 /*
@@ -91,116 +56,27 @@
 #define	MAX(x, y)	((x) > (y) ? (x) : (y))
 #endif
 
-#ifndef roundup
-#define	roundup(x, y)	((((x)+((y)-1))/(y))*(y))
-#endif
-
-#ifndef rounddown
-#define	rounddown(x,y)	(((x)/(y))*(y))
-#endif
-
-#ifndef roundup2
-#define	roundup2(x, m)	(((x) + (m) - 1) & ~((m) - 1))
-#endif
-
 /*
- * Helpers to fetch bytes into 32-bit or 64-bit unsigned integer.
- * On x86/amd64 -- just perform unaligned word fetch.
+ * Branch prediction macros.
  */
-#if defined(__x86_64__) || defined(__i386__)
-#define BYTE_FETCH32(x)	htonl(*(uint32_t *)(x))
-#else
-#define BYTE_FETCH32(x) \
-    ((uint32_t)((x)[0]) << 24 | (uint32_t)((x)[1]) << 16 | \
-     (uint32_t)((x)[2]) <<  8 | (uint32_t)((x)[3]))
-#endif
-#define BYTE_FETCH64(x) \
-    ((uint64_t)BYTE_FETCH32(x) << 32 | BYTE_FETCH32(x + 4))
-
-/*
- * Maths helpers: log2 on integer, fast division and remainder.
- */
-
-#ifndef flsl
-static inline int
-flsl(unsigned long x)
-{
-	return __predict_true(x) ?
-	    (sizeof(unsigned long) * CHAR_BIT) - __builtin_clzl(x) : 0;
-}
-#define	flsl(x)		flsl(x)
-#endif
-#ifndef flsll
-static inline int
-flsll(unsigned long long x)
-{
-	return __predict_true(x) ?
-	    (sizeof(unsigned long long) * CHAR_BIT) - __builtin_clzll(x) : 0;
-}
-#define	flsll(x)	flsl(x)
-#endif
-
-#ifndef ilog2
-#define	ilog2(x)	(flsl(x) - 1)
-#endif
-
-/*
- * A regular assert (debug/diagnostic only).
- */
-#if !defined(ASSERT)
-#define	ASSERT		assert
-#endif
-
-/*
- * Compile-time assertion: if C11 static_assert() is not available,
- * then emulate it.
- */
-#ifndef static_assert
-#ifndef CTASSERT
-#define	CTASSERT(x, y)		__CTASSERT99(x, __INCLUDE_LEVEL__, __LINE__)
-#define	__CTASSERT99(x, a, b)	__CTASSERT0(x, __CONCAT(__ctassert,a), \
-					       __CONCAT(_,b))
-#define	__CTASSERT0(x, y, z)	__CTASSERT1(x, y, z)
-#define	__CTASSERT1(x, y, z)	typedef char y ## z[(x) ? 1 : -1] __unused
-#endif
-#define	static_assert(exp, msg)	CTASSERT(exp)
+#ifndef __predict_true
+#define	__predict_true(x)	__builtin_expect((x) != 0, 1)
+#define	__predict_false(x)	__builtin_expect((x) != 0, 0)
 #endif
 
 /*
  * Atomic operations and memory barriers.  If C11 API is not available,
  * then wrap the GCC builtin routines.
  */
-
 #ifndef atomic_compare_exchange_weak
 #define	atomic_compare_exchange_weak(ptr, expected, desired) \
     __sync_bool_compare_and_swap(ptr, expected, desired)
 #endif
-#ifndef atomic_exchange
-static inline void *
-atomic_exchange(volatile void *ptr, void *nptr)
-{
-	volatile void * volatile old;
-
-	do {
-		old = *(volatile void * volatile *)ptr;
-	} while (!atomic_compare_exchange_weak(
-	    (volatile void * volatile *)ptr, old, nptr));
-
-	return (void *)(uintptr_t)old; // workaround for gcc warnings
-}
-#endif
-#ifndef atomic_fetch_add
-#define	atomic_fetch_add(x,a)	__sync_fetch_and_add(x, a)
-#endif
 
 #ifndef atomic_thread_fence
-/*
- * memory_order_acquire	- membar_consumer/smp_rmb
- * memory_order_release	- membar_producer/smp_wmb
- */
-#define	memory_order_acquire	__atomic_thread_fence(__ATOMIC_ACQUIRE)
-#define	memory_order_release	__atomic_thread_fence(__ATOMIC_RELEASE)
-#define	atomic_thread_fence(m)	m
+#define	memory_order_acquire	__ATOMIC_ACQUIRE	// load barrier
+#define	memory_order_release	__ATOMIC_RELEASE	// store barrier
+#define	atomic_thread_fence(m)	__atomic_thread_fence(m)
 #endif
 
 /*
@@ -215,17 +91,11 @@ atomic_exchange(volatile void *ptr, void *nptr)
 #endif
 #define	SPINLOCK_BACKOFF(count)					\
 do {								\
-	int __i;						\
-	for (__i = (count); __i != 0; __i--) {			\
+	for (int __i = (count); __i != 0; __i--) {		\
 		SPINLOCK_BACKOFF_HOOK;				\
 	}							\
 	if ((count) < SPINLOCK_BACKOFF_MAX)			\
 		(count) += (count);				\
 } while (/* CONSTCOND */ 0);
-
-/*
- * Cache line size - a reasonable upper bound.
- */
-#define	CACHE_LINE_SIZE		64
 
 #endif

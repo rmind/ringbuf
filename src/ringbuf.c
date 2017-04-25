@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Mindaugas Rasiukevicius <rmind at noxt eu>
+ * Copyright (c) 2016-2017 Mindaugas Rasiukevicius <rmind at noxt eu>
  * All rights reserved.
  *
  * Use is subject to license terms, as specified in the LICENSE file.
@@ -25,8 +25,8 @@
  * Consumer
  *
  *	Writes the data between 'written' and 'ready' offsets and updates
- *	the 'written' value.  The consumer thread thread scans for the
- *	lowest seen value by the producers.
+ *	the 'written' value.  The consumer thread scans for the lowest
+ *	seen value by the producers.
  *
  * Key invariant
  *
@@ -52,8 +52,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <inttypes.h>
 #include <string.h>
-#include <pthread.h>
+#include <limits.h>
 #include <errno.h>
 
 #include "ringbuf.h"
@@ -68,15 +69,14 @@
 
 typedef uint64_t	ringbuf_off_t;
 
-typedef struct ringbuf_tls {
+struct ringbuf_local {
 	ringbuf_off_t	seen_off;
-	struct ringbuf_tls *next;
-} ringbuf_tls_t;
+	struct ringbuf_local *next;
+};
 
 struct ringbuf {
 	/* Ring buffer space and TLS key. */
 	size_t		space;
-	pthread_key_t	tls_key;
 
 	/*
 	 * The NEXT hand is atomically updated by the producer.
@@ -88,50 +88,47 @@ struct ringbuf {
 
 	/* The following are updated by the consumer. */
 	ringbuf_off_t	written;
-	ringbuf_tls_t *	list;
+	ringbuf_local_t *list;
 };
 
 /*
- * ringbuf_create: construct a new ring buffer of a given length.
+ * ringbuf_setup: initialise a new ring buffer of a given length.
  */
-ringbuf_t *
-ringbuf_create(size_t length)
+int
+ringbuf_setup(ringbuf_t *rbuf, size_t length)
 {
-	ringbuf_t *rbuf;
-
 	if (length >= RBUF_OFF_MASK) {
 		errno = EINVAL;
-		return NULL;
+		return -1;
 	}
-	rbuf = calloc(1, sizeof(ringbuf_t));
-	if (!rbuf) {
-		return NULL;
-	}
-	if (pthread_key_create(&rbuf->tls_key, free) != 0) {
-		free(rbuf);
-		return NULL;
-	}
+	memset(rbuf, 0, sizeof(ringbuf_t));
 	rbuf->space = length;
 	rbuf->end = RBUF_OFF_MAX;
-	return rbuf;
+	return 0;
 }
 
 /*
- * ringbuf_register: register the current thread as a producer.
+ * ringbuf_get_sizes: return the sizes of the ringbuf_t and ringbuf_local_t.
+ */
+void
+ringbuf_get_sizes(size_t *ringbuf_size, size_t *ringbuf_local_size)
+{
+	if (ringbuf_size)
+		*ringbuf_size = sizeof(ringbuf_t);
+	if (ringbuf_local_size)
+		*ringbuf_local_size = sizeof(ringbuf_local_t);
+}
+
+/*
+ * ringbuf_register: register the thread/process as a producer and
+ * pass the pointer to its local store.
  */
 int
-ringbuf_register(ringbuf_t *rbuf)
+ringbuf_register(ringbuf_t *rbuf, ringbuf_local_t *t)
 {
-	ringbuf_tls_t *t, *head;
+	ringbuf_local_t *head;
 
-	t = pthread_getspecific(rbuf->tls_key);
-	if (__predict_false(t == NULL)) {
-		if ((t = malloc(sizeof(ringbuf_tls_t))) == NULL) {
-			return -1;
-		}
-		pthread_setspecific(rbuf->tls_key, t);
-	}
-	memset(t, 0, sizeof(ringbuf_tls_t));
+	memset(t, 0, sizeof(ringbuf_local_t));
 	t->seen_off = RBUF_OFF_MAX;
 
 	do {
@@ -140,16 +137,6 @@ ringbuf_register(ringbuf_t *rbuf)
 	} while (!atomic_compare_exchange_weak(&rbuf->list, head, t));
 
 	return 0;
-}
-
-/*
- * ringbuf_destroy: destroy the ring buffer object.
- */
-void
-ringbuf_destroy(ringbuf_t *rbuf)
-{
-	pthread_key_delete(rbuf->tls_key);
-	free(rbuf);
 }
 
 /*
@@ -176,14 +163,11 @@ stable_nextoff(ringbuf_t *rbuf)
  * => On failure: returns -1.
  */
 ssize_t
-ringbuf_acquire(ringbuf_t *rbuf, size_t len)
+ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 {
 	ringbuf_off_t seen, next, target;
-	ringbuf_tls_t *t;
 
 	ASSERT(len > 0 && len < rbuf->space);
-	t = pthread_getspecific(rbuf->tls_key);
-	ASSERT(t != NULL);
 	ASSERT(t->seen_off == RBUF_OFF_MAX);
 
 	do {
@@ -265,14 +249,10 @@ ringbuf_acquire(ringbuf_t *rbuf, size_t len)
  * and is ready to be consumed.
  */
 void
-ringbuf_produce(ringbuf_t *rbuf)
+ringbuf_produce(ringbuf_t *rbuf, ringbuf_local_t *t)
 {
-	ringbuf_tls_t *t;
-
-	t = pthread_getspecific(rbuf->tls_key);
-	ASSERT(t != NULL);
+	(void)rbuf;
 	ASSERT(t->seen_off != RBUF_OFF_MAX);
-
 	atomic_thread_fence(memory_order_release);
 	t->seen_off = RBUF_OFF_MAX;
 }
@@ -284,7 +264,7 @@ size_t
 ringbuf_consume(ringbuf_t *rbuf, size_t *offset)
 {
 	ringbuf_off_t written = rbuf->written, next, ready;
-	ringbuf_tls_t *t;
+	ringbuf_local_t *t;
 	size_t towrite;
 
 	/*

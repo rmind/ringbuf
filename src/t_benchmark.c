@@ -29,6 +29,7 @@ static volatile bool		stop;
 
 static int			fd;
 static ringbuf_t *		ringbuf;
+static size_t			ringbuf_size, ringbuf_local_size;
 static uint64_t			written[512];
 
 static const char		logline[] =
@@ -65,9 +66,12 @@ ringbuf_test(void *arg)
 {
 	const unsigned id = (uintptr_t)arg;
 	uint64_t total_bytes = 0;
+	ringbuf_local_t *t;
 	int rv;
 
-	rv = ringbuf_register(ringbuf);
+	t = calloc(1, ringbuf_local_size);
+	assert(t != NULL);
+	rv = ringbuf_register(ringbuf, t);
 	assert(rv == 0); (void)rv;
 
 	written[id] = 0;
@@ -90,13 +94,14 @@ ringbuf_test(void *arg)
 			}
 			continue;
 		}
-		if ((ret = ringbuf_acquire(ringbuf, logbytes)) != -1) {
+		if ((ret = ringbuf_acquire(ringbuf, t, logbytes)) != -1) {
 			off = (size_t)ret;
 			assert(off < sizeof(rbuf));
 			memcpy(&rbuf[off], logline, logbytes);
-			ringbuf_produce(ringbuf);
+			ringbuf_produce(ringbuf, t);
 		}
 	}
+	free(t);
 	written[id] = total_bytes;
 	pthread_exit(NULL);
 	return NULL;
@@ -140,8 +145,10 @@ run_test(void *func(void *))
 	/*
 	 * Create a ring buffer;
 	 */
-	ringbuf = ringbuf_create(sizeof(rbuf));
+	ringbuf_get_sizes(&ringbuf_size, &ringbuf_local_size);
+	ringbuf = malloc(ringbuf_size);
 	assert(ringbuf != NULL);
+	ringbuf_setup(ringbuf, sizeof(rbuf));
 
 	/*
 	 * Spin the benchmark.
@@ -158,6 +165,7 @@ run_test(void *func(void *))
 		pthread_join(thr[i], NULL);
 	}
 	pthread_barrier_destroy(&barrier);
+	free(ringbuf);
 	close(fd);
 
 	uint64_t total_written = 0;

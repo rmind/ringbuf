@@ -13,13 +13,14 @@
 __BEGIN_DECLS
 
 typedef struct ringbuf ringbuf_t;
+typedef struct ringbuf_local ringbuf_local_t;
 
-ringbuf_t *	ringbuf_create(size_t);
-void		ringbuf_destroy(ringbuf_t *);
-int		ringbuf_register(ringbuf_t *);
+int		ringbuf_setup(ringbuf_t *, size_t);
+void		ringbuf_get_sizes(size_t *, size_t *);
+int		ringbuf_register(ringbuf_t *, ringbuf_local_t *);
 
-ssize_t		ringbuf_acquire(ringbuf_t *, size_t);
-void		ringbuf_produce(ringbuf_t *);
+ssize_t		ringbuf_acquire(ringbuf_t *, ringbuf_local_t *, size_t);
+void		ringbuf_produce(ringbuf_t *, ringbuf_local_t *);
 size_t		ringbuf_consume(ringbuf_t *, size_t *);
 void		ringbuf_release(ringbuf_t *, size_t);
 
