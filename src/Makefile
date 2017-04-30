@@ -47,12 +47,12 @@ tests: $(OBJS) t_ringbuf.o
 	$(CC) $(CFLAGS) $^ -o t_ringbuf -lpthread
 	./t_ringbuf
 
-benchmark: $(OBJS) t_benchmark.o
-	$(CC) $(CFLAGS) $^ -o t_benchmark -lpthread
+stress: $(OBJS) t_stress.o
+	$(CC) $(CFLAGS) $^ -o t_stress -lpthread
 
 clean:
 	libtool --mode=clean rm
 	@ rm -rf .libs *.o *.lo *.la
-	@ rm -rf t_ringbuf
+	@ rm -rf t_ringbuf t_stress
 
-.PHONY: all lib install tests benchmark clean
+.PHONY: all lib install tests stress clean

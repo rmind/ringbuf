@@ -21,88 +21,115 @@
 
 #include "ringbuf.h"
 
-#define	NSEC			10
+#define	NSEC			10 /* seconds */
 
 static pthread_barrier_t	barrier;
 static unsigned			nworkers;
 static volatile bool		stop;
 
-static int			fd;
 static ringbuf_t *		ringbuf;
 static size_t			ringbuf_size, ringbuf_local_size;
-static uint64_t			written[512];
+__thread uint32_t		fast_random_seed = 5381;
 
-static const char		logline[] =
-    "10.0.0.1 - - [29/Apr/2016:17:02:50 +0100] "
-    "\"GET /some-random-path/payload/1.ts HTTP/1.1\" 206 1048576 "
-    "\"-\" \"curl/7.29.0\" \"-\"\n";
-static const size_t		logbytes = sizeof(logline) - 1;
-static uint8_t			rbuf[4096];
+/* Note: leave one byte for the magic byte. */
+#define	RBUF_SIZE		4095
+#define	MAGIC_BYTE		0x5a
 
-static void *
-write_test(void *arg)
+static uint8_t			rbuf[RBUF_SIZE + 1];
+
+/*
+ * Simple xorshift; random() causes huge lock contention on Linux.
+ */
+static unsigned long
+fast_random(void)
 {
-	const unsigned id = (uintptr_t)arg;
-	uint64_t total_bytes = 0;
+	uint32_t x = fast_random_seed;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	fast_random_seed = x;
+	return x;
+}
 
-	written[id] = 0;
-	pthread_barrier_wait(&barrier);
-	while (!stop) {
-		char buf[logbytes + 1];
-		ssize_t ret;
+static size_t
+generate_message(unsigned char *buf, size_t buflen)
+{
+	const unsigned len = fast_random() % (buflen - 2);
+	unsigned i = 1, n = len;
+	unsigned char cksum = 0;
 
-		memcpy(buf, logline, logbytes);
-		ret = write(fd, buf, logbytes);
-		assert(ret == (ssize_t)logbytes);
-		total_bytes += ret;
+	while (n--) {
+		buf[i] = '!' + (fast_random() % ('~' - '!'));
+		cksum ^= buf[i];
+		i++;
 	}
-	written[id] = total_bytes;
-	pthread_exit(NULL);
-	return NULL;
+	/* Write the length last. */
+	buf[i++] = cksum;
+	buf[0] = len;
+	return i;
+}
+
+static ssize_t
+verify_message(const unsigned char *buf, unsigned id)
+{
+	unsigned i = 1, len = (unsigned char)buf[0];
+	unsigned char cksum = 0;
+
+	while (len--) {
+		cksum ^= buf[i++];
+	}
+	if (buf[i] != cksum) {
+		return -1;
+	}
+	return (unsigned)buf[0] + 2;
 }
 
 static void *
-ringbuf_test(void *arg)
+ringbuf_stress(void *arg)
 {
 	const unsigned id = (uintptr_t)arg;
-	uint64_t total_bytes = 0;
 	ringbuf_local_t *t;
-	int rv;
+	ssize_t ret;
 
 	t = calloc(1, ringbuf_local_size);
 	assert(t != NULL);
-	rv = ringbuf_register(ringbuf, t);
-	assert(rv == 0); (void)rv;
 
-	written[id] = 0;
+	ret = ringbuf_register(ringbuf, t);
+	assert(ret == 0);
+
 	pthread_barrier_wait(&barrier);
 	while (!stop) {
+		unsigned char buf[255];
 		size_t len, off;
-		ssize_t ret;
+
+		/* Check that the buffer is never overrun. */
+		assert(rbuf[RBUF_SIZE] == MAGIC_BYTE);
 
 		if (id == 0) {
 			if ((len = ringbuf_consume(ringbuf, &off)) != 0) {
 				size_t rem = len;
-				assert(off < sizeof(rbuf));
+				assert(off < RBUF_SIZE);
 				while (rem) {
-					ret = write(fd, &rbuf[off], rem);
+					ret = verify_message(&rbuf[off], id);
+					assert(ret > 0);
+					assert(ret <= (ssize_t)rem);
 					off += ret, rem -= ret;
-					assert(ret != -1);
 				}
 				ringbuf_release(ringbuf, len);
-				total_bytes += len;
 			}
+			sched_yield();
 			continue;
 		}
-		if ((ret = ringbuf_acquire(ringbuf, t, logbytes)) != -1) {
+		len = generate_message(buf, sizeof(buf));
+		if ((ret = ringbuf_acquire(ringbuf, t, len)) != -1) {
 			off = (size_t)ret;
-			assert(off < sizeof(rbuf));
-			memcpy(&rbuf[off], logline, logbytes);
+			assert(off < RBUF_SIZE);
+			memcpy(&rbuf[off], buf, len);
 			ringbuf_produce(ringbuf, t);
 		}
+		sched_yield();
 	}
 	free(t);
-	written[id] = total_bytes;
 	pthread_exit(NULL);
 	return NULL;
 }
@@ -121,13 +148,11 @@ run_test(void *func(void *))
 	pthread_t *thr;
 	int ret;
 
-	srandom(1);
-	nworkers = sysconf(_SC_NPROCESSORS_CONF) + 1;
-
 	/*
-	 * Setup the threads
+	 * Setup the threads.
 	 */
-	thr = malloc(sizeof(pthread_t) * nworkers);
+	nworkers = sysconf(_SC_NPROCESSORS_CONF) + 1;
+	thr = calloc(nworkers, sizeof(pthread_t));
 	pthread_barrier_init(&barrier, NULL, nworkers);
 	stop = false;
 
@@ -137,18 +162,14 @@ run_test(void *func(void *))
 	assert(ret == 0); (void)ret;
 
 	/*
-	 * Open the log file.
-	 */
-	fd = open("test.log", O_RDWR | O_CREAT | O_TRUNC | O_APPEND, 0644);
-	assert(fd != -1);
-
-	/*
-	 * Create a ring buffer;
+	 * Create a ring buffer.
 	 */
 	ringbuf_get_sizes(&ringbuf_size, &ringbuf_local_size);
 	ringbuf = malloc(ringbuf_size);
 	assert(ringbuf != NULL);
-	ringbuf_setup(ringbuf, sizeof(rbuf));
+
+	ringbuf_setup(ringbuf, RBUF_SIZE);
+	memset(rbuf, MAGIC_BYTE, sizeof(rbuf));
 
 	/*
 	 * Spin the benchmark.
@@ -166,30 +187,13 @@ run_test(void *func(void *))
 	}
 	pthread_barrier_destroy(&barrier);
 	free(ringbuf);
-	close(fd);
-
-	uint64_t total_written = 0;
-	for (unsigned i = 0; i < nworkers; i++) {
-		total_written += written[i];
-	}
-	printf("%"PRIu64" MB/sec\n", total_written / 1024 / 1024 / NSEC);
 }
 
 int
 main(int argc, char **argv)
 {
-	if (argc < 2) {
-		return -1;
-	}
-	switch (atoi(argv[1])) {
-	case 0:
-		puts("concurrent write");
-		run_test(write_test);
-		break;
-	case 1:
-		puts("ringbuf + writer");
-		run_test(ringbuf_test);
-		break;
-	}
+	puts("stress test");
+	run_test(ringbuf_stress);
+	puts("ok");
 	return 0;
 }
