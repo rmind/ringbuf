@@ -1,8 +1,10 @@
-# Atomic ring buffer
+# Lock-free ring buffer
 
-Atomic multi-producer single-consumer ring buffer with passive tail update
-and contiguous range operations.  This implementation is written in C11 and
-distributed under the 2-clause BSD license.
+[![Build Status](https://travis-ci.org/rmind/ringbuf.svg?branch=master)](https://travis-ci.org/rmind/ringbuf)
+
+Lock-free multi-producer single-consumer ring buffer with passive tail
+update and contiguous range operations.  This implementation is written
+in C11 and distributed under the 2-clause BSD license.
 
 ## API
 
@@ -49,12 +51,18 @@ distributed under the 2-clause BSD license.
 ## Caveats
 
 This ring buffer implementation always provides a contiguous range of
-space for the producer.  It is achieved by early an wrap-around if the
+space for the producer.  It is achieved by an early wrap-around if the
 requested range cannot fit in the end.  The implication of this is that
 the `ringbuf_acquire` call may fail if the requested range is greater
 than half of the buffer size.  Hence, it may be necessary to ensure that
 the ring buffer size is at least twice as large as the maximum production
 unit size.
+
+The consumer will return a contiguous block of ranges produced i.e. the
+`ringbuf_consume` call will not return partial ranges.  If you think of
+produced range as a message, then consumer will return a block of messages,
+always ending at the message boundary.  Such behaviour allows us to use
+this ring buffer implementation as a message queue.
 
 ## Example
 
