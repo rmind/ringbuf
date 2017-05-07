@@ -10,6 +10,10 @@ ifeq ($(MAKECMDGOALS),tests)
 DEBUG=		1
 endif
 
+ifeq ($(MAKECMDGOALS),stress)
+DEBUG=		1
+endif
+
 ifeq ($(DEBUG),1)
 CFLAGS+=	-O0 -DDEBUG -fno-omit-frame-pointer
 else
@@ -48,7 +52,7 @@ tests: $(OBJS) t_ringbuf.o
 	./t_ringbuf
 
 stress: $(OBJS) t_stress.o
-	$(CC) $(CFLAGS) $^ -o t_stress -lpthread
+	$(CC) $(CFLAGS) $^ -o t_stress $(LDFLAGS) -lpthread
 
 clean:
 	libtool --mode=clean rm

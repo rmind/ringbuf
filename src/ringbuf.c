@@ -6,7 +6,7 @@
  */
 
 /*
- * Atomic multi-producer single-consumer ring buffer with passive
+ * Atomic multi-producer single-consumer ring buffer with the passive
  * tail update and contiguous range operations.
  *
  * There are three offsets -- think of clock hands:
@@ -47,6 +47,12 @@
  *	letting it to perform a successful CAS violating the invariant.
  *	A counter in the 'next' offset (masked by WRAP_COUNTER) is used
  *	to prevent from this problem.  It is incremented on wraparounds.
+ *
+ *	The same ABA problem could also cause a stale 'ready' offset,
+ *	which could be observed by the consumer.  We set WRAP_LOCK_BIT in
+ *	the 'seen' value before advancing the 'next' and clear this bit
+ *	after the successful advancing; this ensures that only the stable
+ *	'ready' observed by the consumer.
  */
 
 #include <stdio.h>
@@ -60,9 +66,9 @@
 #include "ringbuf.h"
 #include "utils.h"
 
-#define	RBUF_OFF_MAX	(UINT64_MAX)
 #define	RBUF_OFF_MASK	(0x00000000ffffffffUL)
 #define	WRAP_LOCK_BIT	(0x8000000000000000UL)
+#define	RBUF_OFF_MAX	(UINT64_MAX & ~WRAP_LOCK_BIT)
 
 #define	WRAP_COUNTER	(0x7fffffff00000000UL)
 #define	WRAP_INCR(x)	(((x) + 0x100000000UL) & WRAP_COUNTER)
@@ -70,7 +76,7 @@
 typedef uint64_t	ringbuf_off_t;
 
 struct ringbuf_local {
-	ringbuf_off_t		seen_off;
+	volatile ringbuf_off_t	seen_off;
 	struct ringbuf_local *	next;
 };
 
@@ -175,14 +181,17 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 
 		/*
 		 * Get the stable 'next' offset.  Save the observed 'next'
-		 * value.  Note: CAS will issue a memory_order_release for
-		 * us and thus ensures that it reaches global visibility
-		 * together with new 'next'.
+		 * value (i.e. the 'seen' offset), but mark the value as
+		 * unstable (set WRAP_LOCK_BIT).
+		 *
+		 * Note: CAS will issue a memory_order_release for us and
+		 * thus ensures that it reaches global visibility together
+		 * with new 'next'.
 		 */
 		seen = stable_nextoff(rbuf);
 		next = seen & RBUF_OFF_MASK;
 		ASSERT(next < rbuf->space);
-		t->seen_off = next;
+		t->seen_off = next | WRAP_LOCK_BIT;
 
 		/*
 		 * Compute the target offset.  Key invariant: we cannot
@@ -223,9 +232,15 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 	} while (!atomic_compare_exchange_weak(&rbuf->next, seen, target));
 
 	/*
-	 * Acquired the range.  If we set the WRAP_LOCK_BIT (because
-	 * we exceed the remaining space and need to wrap-around),
-	 * then save the 'end' offset.
+	 * Acquired the range.  Clear WRAP_LOCK_BIT in the 'seen' value
+	 * thus indicating that it is stable now.
+	 */
+	t->seen_off &= ~WRAP_LOCK_BIT;
+
+	/*
+	 * If we set the WRAP_LOCK_BIT in the 'next' (because we exceed
+	 * the remaining space and need to wrap-around), then save the
+	 * 'end' offset and release the lock.
 	 */
 	if (__predict_false(target & WRAP_LOCK_BIT)) {
 		/* Cannot wrap-around again if consumer did not catch-up. */
@@ -288,20 +303,27 @@ retry:
 	 * the range between 0 and 'written'.  We have to skip them.
 	 */
 	ready = RBUF_OFF_MAX;
-	t = rbuf->list;
-	while (t) {
-		ringbuf_off_t seen_off = t->seen_off;
+	for (t = rbuf->list; t; t = t->next) {
+		unsigned count = SPINLOCK_BACKOFF_MIN;
+		ringbuf_off_t seen_off;
+
+		/*
+		 * Get a stable 'seen' value.  This is necessary since we
+		 * want to discard the stale 'seen' values.
+		 */
+		while ((seen_off = t->seen_off) & WRAP_LOCK_BIT) {
+			SPINLOCK_BACKOFF(count);
+		}
 
 		/*
 		 * Ignore the offsets after the possible wrap-around.
-		 * We are interested in the smallest seen offset is not
-		 * behind the 'written' offset.
+		 * We are interested in the smallest seen offset that is
+		 * not behind the 'written' offset.
 		 */
 		if (seen_off >= written) {
 			ready = MIN(seen_off, ready);
 		}
 		ASSERT(ready >= written);
-		t = t->next;
 	}
 
 	/*
@@ -309,7 +331,7 @@ retry:
 	 * and deduct the safe 'ready' offset.
 	 */
 	if (next < written) {
-		ringbuf_off_t end = MIN(rbuf->space, rbuf->end);
+		const ringbuf_off_t end = MIN(rbuf->space, rbuf->end);
 
 		/*
 		 * Wrap-around case.  Check for the cut off first.
@@ -323,7 +345,7 @@ retry:
 			/*
 			 * Clear the 'end' offset if was set.
 			 */
-			if (rbuf->end) {
+			if (rbuf->end != RBUF_OFF_MAX) {
 				rbuf->end = RBUF_OFF_MAX;
 				atomic_thread_fence(memory_order_release);
 			}

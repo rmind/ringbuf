@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2017 Mindaugas Rasiukevicius <rmind at netbsd org>
+ * All rights reserved.
+ *
+ * Use is subject to license terms, as specified in the LICENSE file.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
