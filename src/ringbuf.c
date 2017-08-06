@@ -151,6 +151,7 @@ ringbuf_register(ringbuf_t *rbuf, unsigned i)
 void
 ringbuf_unregister(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
+	(void)rbuf;
 	w->registered = false;
 	atomic_thread_fence(memory_order_release);
 }
