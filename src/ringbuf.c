@@ -57,6 +57,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <inttypes.h>
 #include <string.h>
@@ -75,9 +76,9 @@
 
 typedef uint64_t	ringbuf_off_t;
 
-struct ringbuf_local {
+struct ringbuf_worker {
 	volatile ringbuf_off_t	seen_off;
-	struct ringbuf_local *	next;
+	bool			registered;
 };
 
 struct ringbuf {
@@ -94,14 +95,15 @@ struct ringbuf {
 
 	/* The following are updated by the consumer. */
 	ringbuf_off_t		written;
-	ringbuf_local_t *	list;
+	unsigned		nworkers;
+	ringbuf_worker_t	workers[];
 };
 
 /*
  * ringbuf_setup: initialise a new ring buffer of a given length.
  */
 int
-ringbuf_setup(ringbuf_t *rbuf, size_t length)
+ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
 {
 	if (length >= RBUF_OFF_MASK) {
 		errno = EINVAL;
@@ -110,39 +112,47 @@ ringbuf_setup(ringbuf_t *rbuf, size_t length)
 	memset(rbuf, 0, sizeof(ringbuf_t));
 	rbuf->space = length;
 	rbuf->end = RBUF_OFF_MAX;
+	rbuf->nworkers = nworkers;
 	return 0;
 }
 
 /*
- * ringbuf_get_sizes: return the sizes of the ringbuf_t and ringbuf_local_t.
+ * ringbuf_get_sizes: return the sizes of the ringbuf_t and ringbuf_worker_t.
  */
 void
-ringbuf_get_sizes(size_t *ringbuf_size, size_t *ringbuf_local_size)
+ringbuf_get_sizes(const unsigned nworkers,
+    size_t *ringbuf_size, size_t *ringbuf_worker_size)
 {
 	if (ringbuf_size)
-		*ringbuf_size = sizeof(ringbuf_t);
-	if (ringbuf_local_size)
-		*ringbuf_local_size = sizeof(ringbuf_local_t);
+		*ringbuf_size = offsetof(ringbuf_t, workers[nworkers]);
+	if (ringbuf_worker_size)
+		*ringbuf_worker_size = sizeof(ringbuf_worker_t);
 }
 
 /*
- * ringbuf_register: register the thread/process as a producer and
- * pass the pointer to its local store.
+ * ringbuf_register: register the worker (thread/process) as a producer
+ * and pass the pointer to its local store.
  */
-int
-ringbuf_register(ringbuf_t *rbuf, ringbuf_local_t *t)
+ringbuf_worker_t *
+ringbuf_register(ringbuf_t *rbuf, unsigned i)
 {
-	ringbuf_local_t *head;
+	ringbuf_worker_t *w;
 
-	memset(t, 0, sizeof(ringbuf_local_t));
-	t->seen_off = RBUF_OFF_MAX;
+	w = &rbuf->workers[i];
+	ASSERT(!w->registered);
 
-	do {
-		head = rbuf->list;
-		t->next = head;
-	} while (!atomic_compare_exchange_weak(&rbuf->list, head, t));
+	memset(w, 0, sizeof(ringbuf_worker_t));
+	w->seen_off = RBUF_OFF_MAX;
+	atomic_thread_fence(memory_order_release);
+	w->registered = true;
+	return w;
+}
 
-	return 0;
+void
+ringbuf_unregister(ringbuf_t *rbuf, ringbuf_worker_t *w)
+{
+	w->registered = false;
+	atomic_thread_fence(memory_order_release);
 }
 
 /*
@@ -169,12 +179,12 @@ stable_nextoff(ringbuf_t *rbuf)
  * => On failure: returns -1.
  */
 ssize_t
-ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
+ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 {
 	ringbuf_off_t seen, next, target;
 
 	ASSERT(len > 0 && len <= rbuf->space);
-	ASSERT(t->seen_off == RBUF_OFF_MAX);
+	ASSERT(w->seen_off == RBUF_OFF_MAX);
 
 	do {
 		ringbuf_off_t written;
@@ -191,7 +201,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 		seen = stable_nextoff(rbuf);
 		next = seen & RBUF_OFF_MASK;
 		ASSERT(next < rbuf->space);
-		t->seen_off = next | WRAP_LOCK_BIT;
+		w->seen_off = next | WRAP_LOCK_BIT;
 
 		/*
 		 * Compute the target offset.  Key invariant: we cannot
@@ -201,7 +211,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 		written = rbuf->written;
 		if (__predict_false(next < written && target >= written)) {
 			/* The producer must wait. */
-			t->seen_off = RBUF_OFF_MAX;
+			w->seen_off = RBUF_OFF_MAX;
 			return -1;
 		}
 
@@ -220,7 +230,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 			 */
 			target = exceed ? (WRAP_LOCK_BIT | len) : 0;
 			if ((target & RBUF_OFF_MASK) >= written) {
-				t->seen_off = RBUF_OFF_MAX;
+				w->seen_off = RBUF_OFF_MAX;
 				return -1;
 			}
 			/* Increment the wrap-around counter. */
@@ -235,7 +245,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
 	 * Acquired the range.  Clear WRAP_LOCK_BIT in the 'seen' value
 	 * thus indicating that it is stable now.
 	 */
-	t->seen_off &= ~WRAP_LOCK_BIT;
+	w->seen_off &= ~WRAP_LOCK_BIT;
 
 	/*
 	 * If we set the WRAP_LOCK_BIT in the 'next' (because we exceed
@@ -265,12 +275,13 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_local_t *t, size_t len)
  * and is ready to be consumed.
  */
 void
-ringbuf_produce(ringbuf_t *rbuf, ringbuf_local_t *t)
+ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
 	(void)rbuf;
-	ASSERT(t->seen_off != RBUF_OFF_MAX);
+	ASSERT(w->registered);
+	ASSERT(w->seen_off != RBUF_OFF_MAX);
 	atomic_thread_fence(memory_order_release);
-	t->seen_off = RBUF_OFF_MAX;
+	w->seen_off = RBUF_OFF_MAX;
 }
 
 /*
@@ -280,7 +291,6 @@ size_t
 ringbuf_consume(ringbuf_t *rbuf, size_t *offset)
 {
 	ringbuf_off_t written = rbuf->written, next, ready;
-	ringbuf_local_t *t;
 	size_t towrite;
 retry:
 	/*
@@ -303,15 +313,22 @@ retry:
 	 * the range between 0 and 'written'.  We have to skip them.
 	 */
 	ready = RBUF_OFF_MAX;
-	for (t = rbuf->list; t; t = t->next) {
+
+	for (unsigned i = 0; i < rbuf->nworkers; i++) {
+		ringbuf_worker_t *w = &rbuf->workers[i];
 		unsigned count = SPINLOCK_BACKOFF_MIN;
 		ringbuf_off_t seen_off;
+
+		/* Skip if the worker has not registered. */
+		if (!w->registered) {
+			continue;
+		}
 
 		/*
 		 * Get a stable 'seen' value.  This is necessary since we
 		 * want to discard the stale 'seen' values.
 		 */
-		while ((seen_off = t->seen_off) & WRAP_LOCK_BIT) {
+		while ((seen_off = w->seen_off) & WRAP_LOCK_BIT) {
 			SPINLOCK_BACKOFF(count);
 		}
 

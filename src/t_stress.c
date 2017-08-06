@@ -28,7 +28,7 @@ static unsigned			nworkers;
 static volatile bool		stop;
 
 static ringbuf_t *		ringbuf;
-static size_t			ringbuf_size, ringbuf_local_size;
+static size_t			ringbuf_obj_size;
 __thread uint32_t		fast_random_seed = 5381;
 
 #define	RBUF_SIZE		(512)
@@ -88,19 +88,16 @@ static void *
 ringbuf_stress(void *arg)
 {
 	const unsigned id = (uintptr_t)arg;
-	ringbuf_local_t *t;
-	ssize_t ret;
+	ringbuf_worker_t *w;
 
-	t = calloc(1, ringbuf_local_size);
-	assert(t != NULL);
-
-	ret = ringbuf_register(ringbuf, t);
-	assert(ret == 0);
+	w = ringbuf_register(ringbuf, id);
+	assert(w != NULL);
 
 	pthread_barrier_wait(&barrier);
 	while (!stop) {
 		unsigned char buf[MIN((1 << CHAR_BIT), RBUF_SIZE)];
 		size_t len, off;
+		ssize_t ret;
 
 		/* Check that the buffer is never overrun. */
 		assert(rbuf[RBUF_SIZE] == MAGIC_BYTE);
@@ -120,15 +117,14 @@ ringbuf_stress(void *arg)
 			continue;
 		}
 		len = generate_message(buf, sizeof(buf) - 1);
-		if ((ret = ringbuf_acquire(ringbuf, t, len)) != -1) {
+		if ((ret = ringbuf_acquire(ringbuf, w, len)) != -1) {
 			off = (size_t)ret;
 			assert(off < RBUF_SIZE);
 			memcpy(&rbuf[off], buf, len);
-			ringbuf_produce(ringbuf, t);
+			ringbuf_produce(ringbuf, w);
 		}
 	}
 	pthread_barrier_wait(&barrier);
-	free(t);
 	pthread_exit(NULL);
 	return NULL;
 }
@@ -163,11 +159,11 @@ run_test(void *func(void *))
 	/*
 	 * Create a ring buffer.
 	 */
-	ringbuf_get_sizes(&ringbuf_size, &ringbuf_local_size);
-	ringbuf = malloc(ringbuf_size);
+	ringbuf_get_sizes(nworkers, &ringbuf_obj_size, NULL);
+	ringbuf = malloc(ringbuf_obj_size);
 	assert(ringbuf != NULL);
 
-	ringbuf_setup(ringbuf, RBUF_SIZE);
+	ringbuf_setup(ringbuf, nworkers, RBUF_SIZE);
 	memset(rbuf, MAGIC_BYTE, sizeof(rbuf));
 
 	/*
