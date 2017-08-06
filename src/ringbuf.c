@@ -78,7 +78,7 @@ typedef uint64_t	ringbuf_off_t;
 
 struct ringbuf_worker {
 	volatile ringbuf_off_t	seen_off;
-	bool			registered;
+	int			registered;
 };
 
 struct ringbuf {
@@ -136,12 +136,8 @@ ringbuf_get_sizes(const unsigned nworkers,
 ringbuf_worker_t *
 ringbuf_register(ringbuf_t *rbuf, unsigned i)
 {
-	ringbuf_worker_t *w;
+	ringbuf_worker_t *w = &rbuf->workers[i];
 
-	w = &rbuf->workers[i];
-	ASSERT(!w->registered);
-
-	memset(w, 0, sizeof(ringbuf_worker_t));
 	w->seen_off = RBUF_OFF_MAX;
 	atomic_thread_fence(memory_order_release);
 	w->registered = true;
@@ -151,9 +147,8 @@ ringbuf_register(ringbuf_t *rbuf, unsigned i)
 void
 ringbuf_unregister(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
-	(void)rbuf;
 	w->registered = false;
-	atomic_thread_fence(memory_order_release);
+	(void)rbuf;
 }
 
 /*
