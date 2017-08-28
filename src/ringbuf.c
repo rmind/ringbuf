@@ -6,8 +6,9 @@
  */
 
 /*
- * Atomic multi-producer single-consumer ring buffer with the passive
- * tail update and contiguous range operations.
+ * Atomic multi-producer single-consumer ring buffer, which supports
+ * contiguous range operations and which can be conveniently used for
+ * message passing.
  *
  * There are three offsets -- think of clock hands:
  * - NEXT: marks the beginning of the available space,

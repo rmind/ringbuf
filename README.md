@@ -2,9 +2,10 @@
 
 [![Build Status](https://travis-ci.org/rmind/ringbuf.svg?branch=master)](https://travis-ci.org/rmind/ringbuf)
 
-Lock-free multi-producer single-consumer ring buffer with passive tail
-update and contiguous range operations.  This implementation is written
-in C11 and distributed under the 2-clause BSD license.
+Lock-free multi-producer single-consumer (MPSC) ring buffer which supports
+contiguous range operations and which can be conveniently used for message
+passing.  The implementation is written in C11 and distributed under the
+2-clause BSD license.
 
 ## API
 
@@ -60,9 +61,10 @@ produced range as a message, then consumer will return a block of messages,
 always ending at the message boundary.  Such behaviour allows us to use
 this ring buffer implementation as a message queue.
 
-The implementation was extensively tested on a 24-core machine, see
-[the stress test](src/t_stress.c) for the details on the technique.
-
+The implementation was extensively tested on a 24-core x86 machine,
+see [the stress test](src/t_stress.c) for the details on the technique.
+It also provides an example how the mechanism can be used for message
+passing.
 
 ## Caveats
 
