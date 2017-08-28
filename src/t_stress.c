@@ -38,7 +38,8 @@ __thread uint32_t		fast_random_seed = 5381;
 static uint8_t			rbuf[RBUF_SIZE + 1];
 
 /*
- * Simple xorshift; random() causes huge lock contention on Linux.
+ * Simple xorshift; random() causes huge lock contention on Linux/glibc,
+ * which would "hide" the possible race conditions.
  */
 static unsigned long
 fast_random(void)
@@ -51,6 +52,11 @@ fast_random(void)
 	return x;
 }
 
+/*
+ * Generate a random message of a random length (up to the given size)
+ * and simple XOR based checksum.  The first byte is reserved for the
+ * message length and the last byte is reserved for a checksum.
+ */
 static size_t
 generate_message(unsigned char *buf, size_t buflen)
 {
@@ -63,12 +69,19 @@ generate_message(unsigned char *buf, size_t buflen)
 		cksum ^= buf[i];
 		i++;
 	}
-	/* Write the length last. */
+	/*
+	 * Write the length and checksum last, trying to exploit a
+	 * possibility of a race condition.  NOTE: depending on an
+	 * architecture, might want to try a memory barrier here.
+	 */
 	buf[i++] = cksum;
 	buf[0] = len;
 	return i;
 }
 
+/*
+ * Take an arbitrary message of a variable length and verify its checksum.
+ */
 static ssize_t
 verify_message(const unsigned char *buf)
 {
@@ -92,6 +105,12 @@ ringbuf_stress(void *arg)
 
 	w = ringbuf_register(ringbuf, id);
 	assert(w != NULL);
+
+	/*
+	 * There are NCPU threads concurrently generating and producing
+	 * random messages and a single consumer thread (ID 0) verifying
+	 * and releasing the messages.
+	 */
 
 	pthread_barrier_wait(&barrier);
 	while (!stop) {
@@ -167,7 +186,7 @@ run_test(void *func(void *))
 	memset(rbuf, MAGIC_BYTE, sizeof(rbuf));
 
 	/*
-	 * Spin the benchmark.
+	 * Spin the test.
 	 */
 	alarm(nsec);
 

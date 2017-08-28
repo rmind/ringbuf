@@ -60,6 +60,10 @@ produced range as a message, then consumer will return a block of messages,
 always ending at the message boundary.  Such behaviour allows us to use
 this ring buffer implementation as a message queue.
 
+The implementation was extensively tested on a 24-core machine, see
+[the stress test](src/t_stress.c) for the details on the technique.
+
+
 ## Caveats
 
 This ring buffer implementation always provides a contiguous range of
