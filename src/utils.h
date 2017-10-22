@@ -40,8 +40,10 @@
 /*
  * A regular assert (debug/diagnostic only).
  */
-#if !defined(ASSERT)
+#if defined(DEBUG)
 #define	ASSERT		assert
+#else
+#define	ASSERT(x)
 #endif
 
 /*

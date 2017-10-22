@@ -2,9 +2,15 @@
 # This file is in the Public Domain.
 #
 
-CFLAGS=		-std=gnu99 -O2 -g -W -Wextra -Werror -D_BSD_SOURCE
+CFLAGS=		-std=c11 -O2 -g -W -Wextra -Werror
+CFLAGS+=	-D_POSIX_C_SOURCE=200809L
+CFLAGS+=	-D_GNU_SOURCE -D_DEFAULT_SOURCE
+
 CFLAGS+=	-Wstrict-prototypes -Wmissing-prototypes -Wpointer-arith
-CFLAGS+=	-Wshadow -Wcast-qual -Wwrite-strings
+CFLAGS+=	-Wmissing-declarations -Wredundant-decls -Wnested-externs
+CFLAGS+=	-Wshadow -Wcast-qual -Wcast-align -Wwrite-strings
+CFLAGS+=	-Wold-style-definition
+#CFLAGS+=	-Wsuggest-attribute=noreturn -Wjump-misses-init
 
 ifeq ($(MAKECMDGOALS),tests)
 DEBUG=		1
@@ -29,6 +35,8 @@ $(LIB).la:	LDFLAGS+=	-rpath $(LIBDIR)
 install/%.la:	ILIBDIR=	$(DESTDIR)/$(LIBDIR)
 install:	IINCDIR=	$(DESTDIR)/$(INCDIR)/
 #install:	IMANDIR=	$(DESTDIR)/$(MANDIR)/man3/
+
+obj: $(OBJS)
 
 lib: $(LIB).la
 
@@ -56,7 +64,6 @@ stress: $(OBJS) t_stress.o
 
 clean:
 	libtool --mode=clean rm
-	@ rm -rf .libs *.o *.lo *.la
-	@ rm -rf t_ringbuf t_stress
+	rm -rf .libs *.o *.lo *.la t_ringbuf t_stress
 
-.PHONY: all lib install tests stress clean
+.PHONY: all obj lib install tests stress clean
