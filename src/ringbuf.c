@@ -110,7 +110,7 @@ ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
 		errno = EINVAL;
 		return -1;
 	}
-	memset(rbuf, 0, sizeof(ringbuf_t));
+	memset(rbuf, 0, offsetof(ringbuf_t, workers[nworkers]));
 	rbuf->space = length;
 	rbuf->end = RBUF_OFF_MAX;
 	rbuf->nworkers = nworkers;
