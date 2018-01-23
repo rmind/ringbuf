@@ -19,7 +19,7 @@ static void
 test_wraparound(void)
 {
 	const size_t n = 1000;
-	ringbuf_t *r = malloc(ringbuf_obj_size);
+	ringbuf_t *r = (ringbuf_t *)malloc(ringbuf_obj_size);
 	ringbuf_worker_t *w;
 	size_t len, woff;
 	ssize_t off;
@@ -62,7 +62,7 @@ test_wraparound(void)
 static void
 test_multi(void)
 {
-	ringbuf_t *r = malloc(ringbuf_obj_size);
+	ringbuf_t *r = (ringbuf_t *)malloc(ringbuf_obj_size);
 	ringbuf_worker_t *w;
 	size_t len, woff;
 	ssize_t off;
@@ -132,7 +132,7 @@ test_multi(void)
 static void
 test_overlap(void)
 {
-	ringbuf_t *r = malloc(ringbuf_obj_size);
+	ringbuf_t *r = (ringbuf_t *)malloc(ringbuf_obj_size);
 	ringbuf_worker_t *w1, *w2;
 	size_t len, woff;
 	ssize_t off;
@@ -205,7 +205,7 @@ test_overlap(void)
 static void
 test_random(void)
 {
-	ringbuf_t *r = malloc(ringbuf_obj_size);
+	ringbuf_t *r = (ringbuf_t *)malloc(ringbuf_obj_size);
 	ringbuf_worker_t *w1, *w2;
 	ssize_t off1 = -1, off2 = -1;
 	unsigned n = 1000 * 1000 * 50;
