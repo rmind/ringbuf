@@ -121,7 +121,7 @@ ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
  * ringbuf_get_sizes: return the sizes of the ringbuf_t and ringbuf_worker_t.
  */
 void
-ringbuf_get_sizes(const unsigned nworkers,
+ringbuf_get_sizes(unsigned nworkers,
     size_t *ringbuf_size, size_t *ringbuf_worker_size)
 {
 	if (ringbuf_size)
