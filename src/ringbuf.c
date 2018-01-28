@@ -164,6 +164,7 @@ ringbuf_register(ringbuf_t *rbuf, unsigned i)
 		w->next = old_used;
 	} while (!atomic_compare_exchange_weak(&rbuf->used_workers, old_used, w));
 
+	(void)i;
 	return w;
 }
 
@@ -349,7 +350,7 @@ retry:
 			 * Remove this worker from the used-worker stack.
 			 * If it can't be, try again later.
 			 */
-			if (atomic_compare_exchange_weak(&pw, w, w->next)) {
+			if (atomic_compare_exchange_weak(pw, w, w->next)) {
 				/* Push this unused worker on top of the free-worker stack. */
 				do {
 					old_free = rbuf->free_workers;
