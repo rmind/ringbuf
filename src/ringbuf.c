@@ -79,7 +79,7 @@ typedef uint64_t	ringbuf_off_t;
 
 struct ringbuf_worker {
 	volatile ringbuf_off_t	seen_off;
-	int			registered;
+	ringbuf_worker_t *		next;
 };
 
 struct ringbuf {
@@ -93,6 +93,9 @@ struct ringbuf {
 	 */
 	volatile ringbuf_off_t	next;
 	ringbuf_off_t		end;
+
+	/* Track acquires that haven't finished producing yet. */
+	ringbuf_worker_t	*used_workers, *free_workers;
 
 	/* The following are updated by the consumer. */
 	ringbuf_off_t		written;
@@ -114,6 +117,12 @@ ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
 	rbuf->space = length;
 	rbuf->end = RBUF_OFF_MAX;
 	rbuf->nworkers = nworkers;
+
+	/* Put all workers into the free-stack. */
+	for (unsigned i = 0; i < rbuf->nworkers; i++) {
+		rbuf->workers[i].next = rbuf->free_workers;
+		rbuf->free_workers = &(rbuf->workers[i]);
+	}
 	return 0;
 }
 
@@ -137,18 +146,32 @@ ringbuf_get_sizes(unsigned nworkers,
 ringbuf_worker_t *
 ringbuf_register(ringbuf_t *rbuf, unsigned i)
 {
-	ringbuf_worker_t *w = &rbuf->workers[i];
+	/* Get a worker-record, to track state between acquire & produce. */
+	ringbuf_worker_t *w, *new_free, *old_used;
+	do {
+		w = rbuf->free_workers;
+		if (!w)
+			return NULL;
+		new_free = w->next;
+	} while (!atomic_compare_exchange_weak(&rbuf->free_workers, w, new_free));
 
+	/* No acquire/produce being tracked yet. */
 	w->seen_off = RBUF_OFF_MAX;
-	atomic_thread_fence(memory_order_release);
-	w->registered = true;
+
+	/* Push this worker on top of the used-worker stack. */
+	do {
+		old_used = rbuf->used_workers;
+		w->next = old_used;
+	} while (!atomic_compare_exchange_weak(&rbuf->used_workers, old_used, w));
+
 	return w;
 }
 
 void
 ringbuf_unregister(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
-	w->registered = false;
+	/* Mark this worker as unregistered. */
+	w->seen_off = (RBUF_OFF_MAX | WRAP_LOCK_BIT);
 	(void)rbuf;
 }
 
@@ -275,8 +298,7 @@ void
 ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
 	(void)rbuf;
-	ASSERT(w->registered);
-	ASSERT(w->seen_off != RBUF_OFF_MAX);
+	ASSERT((w->seen_off & ~WRAP_LOCK_BIT) != RBUF_OFF_MAX);
 	atomic_thread_fence(memory_order_release);
 	w->seen_off = RBUF_OFF_MAX;
 }
@@ -288,6 +310,8 @@ size_t
 ringbuf_consume(ringbuf_t *rbuf, size_t *offset)
 {
 	ringbuf_off_t written = rbuf->written, next, ready;
+	ringbuf_worker_t *w;
+	ringbuf_worker_t * volatile *pw;
 	size_t towrite;
 retry:
 	/*
@@ -311,33 +335,52 @@ retry:
 	 */
 	ready = RBUF_OFF_MAX;
 
-	for (unsigned i = 0; i < rbuf->nworkers; i++) {
-		ringbuf_worker_t *w = &rbuf->workers[i];
+	w = rbuf->used_workers;
+	pw = &rbuf->used_workers;
+	while (w) {
 		unsigned count = SPINLOCK_BACKOFF_MIN;
 		ringbuf_off_t seen_off;
 
-		/* Skip if the worker has not registered. */
-		if (!w->registered) {
-			continue;
+		/* If this worker has been unregistered, try to clean it up. */
+		if (w->seen_off == (RBUF_OFF_MAX | WRAP_LOCK_BIT)) {
+			ringbuf_worker_t *old_free;
+
+			/*
+			 * Remove this worker from the used-worker stack.
+			 * If it can't be, try again later.
+			 */
+			if (atomic_compare_exchange_weak(&pw, w, w->next)) {
+				/* Push this unused worker on top of the free-worker stack. */
+				do {
+					old_free = rbuf->free_workers;
+					w->next = old_free;
+				} while (!atomic_compare_exchange_weak(&rbuf->free_workers, old_free, w));
+				w = w->next;
+				continue;
+			}
+		} else {
+			/*
+			 * Get a stable 'seen' value.  This is necessary since we
+			 * want to discard the stale 'seen' values.
+			 */
+			while ((seen_off = w->seen_off) & WRAP_LOCK_BIT) {
+				SPINLOCK_BACKOFF(count);
+			}
+
+			/*
+			 * Ignore the offsets after the possible wrap-around.
+			 * We are interested in the smallest seen offset that is
+			 * not behind the 'written' offset.
+			 */
+			if (seen_off >= written) {
+				ready = MIN(seen_off, ready);
+			}
+			ASSERT(ready >= written);
 		}
 
-		/*
-		 * Get a stable 'seen' value.  This is necessary since we
-		 * want to discard the stale 'seen' values.
-		 */
-		while ((seen_off = w->seen_off) & WRAP_LOCK_BIT) {
-			SPINLOCK_BACKOFF(count);
-		}
-
-		/*
-		 * Ignore the offsets after the possible wrap-around.
-		 * We are interested in the smallest seen offset that is
-		 * not behind the 'written' offset.
-		 */
-		if (seen_off >= written) {
-			ready = MIN(seen_off, ready);
-		}
-		ASSERT(ready >= written);
+		/* Move to the next incomplete acquire/produce operation. */
+		pw = &w->next;
+		w = w->next;
 	}
 
 	/*
