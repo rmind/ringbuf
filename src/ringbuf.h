@@ -8,6 +8,23 @@
 #ifndef _RINGBUF_H_
 #define _RINGBUF_H_
 
+// Define signed-size-type when using MSVC.
+#if defined(_MSC_VER)
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+
+#undef __BEGIN_DECLS
+#undef __END_DECLS
+#ifdef __cplusplus
+# define __BEGIN_DECLS extern "C" {
+# define __END_DECLS }
+#else
+# define __BEGIN_DECLS /* empty */
+# define __END_DECLS /* empty */
+#endif
+
+#endif // _MSC_VER
+
 __BEGIN_DECLS
 
 typedef struct ringbuf ringbuf_t;
@@ -26,4 +43,4 @@ void		ringbuf_release(ringbuf_t *, size_t);
 
 __END_DECLS
 
-#endif
+#endif // _RINGBUF_H_
