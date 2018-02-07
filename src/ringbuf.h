@@ -19,7 +19,7 @@ void		ringbuf_get_sizes(unsigned, size_t *, size_t *);
 ringbuf_worker_t *ringbuf_register(ringbuf_t *, unsigned);
 void		ringbuf_unregister(ringbuf_t *, ringbuf_worker_t *);
 
-ssize_t		ringbuf_acquire(ringbuf_t *, ringbuf_worker_t *, size_t);
+ssize_t		ringbuf_acquire(ringbuf_t *, ringbuf_worker_t **, size_t);
 void		ringbuf_produce(ringbuf_t *, ringbuf_worker_t *);
 size_t		ringbuf_consume(ringbuf_t *, size_t *);
 void		ringbuf_release(ringbuf_t *, size_t);
