@@ -62,7 +62,7 @@
  * Branch prediction macros.
  */
 #ifndef __predict_true
-	#if _MSC_VER <= 1600
+	#if defined(_MSC_VER) && _MSC_VER <= 1600
 		#define __predict_true(x) (x)
 		#define __predict_false(x) (x)
 	#else //  _MSC_VER <= 1600
@@ -118,7 +118,7 @@
 
 #ifndef atomic_thread_fence
 	// Define atomic-operation fences before C11.
-	#if _MSC_VER <= 1600
+	#if defined(_MSC_VER) && _MSC_VER <= 1600
 		#define atomic_thread_fence(x) ::MemoryBarrier()
 	#else //  _MSC_VER <= 1600
 		#define	memory_order_acquire	__ATOMIC_ACQUIRE	// load barrier
