@@ -299,7 +299,6 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 {
 	ringbuf_off_t seen, next, target;
 	ringbuf_worker_t *w;
-	ringbuf_off_t seen_off;
 
 	ASSERT(len > 0 && len <= rbuf->space);
 
@@ -309,6 +308,8 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 	if (w == NULL)
 		return -1;
 	ASSERT(w->seen_off == RBUF_OFF_MAX);
+	w->seen_off = RBUF_OFF_MAX | WRAP_LOCK_BIT;
+	push_worker(rbuf, &rbuf->used_workers, w);
 
 	do {
 		ringbuf_off_t written;
@@ -325,7 +326,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 		seen = stable_nextoff(rbuf);
 		next = seen & RBUF_OFF_MASK;
 		ASSERT(next < rbuf->space);
-		seen_off = next | WRAP_LOCK_BIT;
+		w->seen_off = next | WRAP_LOCK_BIT;
 
 		/*
 		 * Compute the target offset.  Key invariant: we cannot
@@ -334,10 +335,8 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 		target = next + len;
 		written = rbuf->written;
 		if (__predict_false(next < written && target >= written)) {
-			/* Free this unused worker-record. */
-			push_worker(rbuf, &rbuf->free_workers, w);
-
 			/* The producer must wait. */
+			w->seen_off = RBUF_OFF_MAX;
 			return -1;
 		}
 
@@ -356,9 +355,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 			 */
 			target = exceed ? (WRAP_LOCK_BIT | len) : 0;
 			if ((target & RBUF_OFF_MASK) >= written) {
-				/* Free this unused worker-record. */
-				push_worker(rbuf, &rbuf->free_workers, w);
-
+				w->seen_off = RBUF_OFF_MAX;
 				return -1;
 			}
 			/* Increment the wrap-around counter. */
@@ -373,8 +370,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 	 * Acquired the range.  Clear WRAP_LOCK_BIT in the 'seen' value
 	 * thus indicating that it is stable now.
 	 */
-	w->seen_off = (seen_off & ~WRAP_LOCK_BIT);
-	push_worker(rbuf, &rbuf->used_workers, w);
+	w->seen_off &= ~WRAP_LOCK_BIT;
 
 	/* Hand this worker-record back to our caller. */
 	*pw = w;

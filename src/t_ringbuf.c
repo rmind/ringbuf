@@ -11,7 +11,7 @@
 
 #include "ringbuf.h"
 
-#define	MAX_WORKERS	2
+#define	MAX_WORKERS	3
 
 static size_t		ringbuf_obj_size;
 
