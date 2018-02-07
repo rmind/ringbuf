@@ -93,7 +93,7 @@
 #endif
 #define	SPINLOCK_BACKOFF(count)					\
 do {								\
-	for (int __i = (count); __i != 0; __i--) {		\
+	for (int __i = ((count) + fast_random() % (count)); __i != 0; __i--) {		\
 		SPINLOCK_BACKOFF_HOOK;				\
 	}							\
 	if ((count) < SPINLOCK_BACKOFF_MAX)			\

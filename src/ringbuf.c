@@ -166,6 +166,22 @@ ringbuf_unregister(ringbuf_t *rbuf, ringbuf_worker_t *w)
 }
 
 /*
+ * Simple xorshift; random() causes huge lock contention on Linux/glibc,
+ * which would "hide" the possible race conditions.
+ */
+__thread uint32_t fast_random_seed_r = 5381;
+static unsigned long
+fast_random(void)
+{
+	uint32_t x = fast_random_seed_r;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	fast_random_seed_r = x;
+	return x;
+}
+
+/*
  * stable_nextoff: capture and return a stable value of the 'next' offset.
  */
 static inline ringbuf_off_t
@@ -190,6 +206,7 @@ push_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head,
 	ringbuf_worker_t *w)
 {
 	worker_off_t w_offset, old_head, new_head;
+	unsigned count = SPINLOCK_BACKOFF_MIN;
 
 	/* Get the offset of the worker-record being pushed. */
 	w_offset = w - rbuf->workers;
@@ -197,7 +214,7 @@ push_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head,
 	/* Make sure this worker-record isn't on any stack already. */
 	ASSERT(w->next == WORKER_NULL);
 
-	do {
+	for (;;) {
 		/* Get the offset of the next worker-record on the stack. */
 		old_head = *stack_head;
 
@@ -211,7 +228,10 @@ push_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head,
 		 */
 		w->next = (old_head & RBUF_OFF_MASK);
 		new_head = (w_offset | WRAP_INCR(old_head));
-	} while (!atomic_compare_exchange_weak(stack_head, old_head, new_head));
+		if (atomic_compare_exchange_weak(stack_head, old_head, new_head))
+			break;
+		SPINLOCK_BACKOFF(count);
+	}
 }
 
 /*
@@ -222,8 +242,9 @@ pop_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head)
 {
 	worker_off_t old_head, new_head;
 	ringbuf_worker_t *w;
+	unsigned count = SPINLOCK_BACKOFF_MIN;
 
-	do {
+	for (;;) {
 		worker_off_t old_head_offset;
 
 		/* Get the offset of the worker-record on top of the stack. */
@@ -241,7 +262,10 @@ pop_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head)
 		 */
 		new_head = (w->next & RBUF_OFF_MASK);
 		new_head |= WRAP_INCR(old_head);
-	} while (!atomic_compare_exchange_weak(stack_head, old_head, new_head));
+		if (atomic_compare_exchange_weak(stack_head, old_head, new_head))
+			break;
+		SPINLOCK_BACKOFF(count);
+	}
 
 	/*
 	 * Since this worker-record isn't on any stack at this point,
