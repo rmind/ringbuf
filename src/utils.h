@@ -40,7 +40,7 @@
 /*
  * A regular assert (debug/diagnostic only).
  */
-#if defined(DEBUG)
+#if !defined(NDEBUG)
 #define	ASSERT		assert
 #else
 #define	ASSERT(x)
@@ -62,8 +62,13 @@
  * Branch prediction macros.
  */
 #ifndef __predict_true
-#define	__predict_true(x)	__builtin_expect((x) != 0, 1)
-#define	__predict_false(x)	__builtin_expect((x) != 0, 0)
+	#if defined(_MSC_VER) && _MSC_VER <= 1600
+		#define __predict_true(x) (x)
+		#define __predict_false(x) (x)
+	#else //  _MSC_VER <= 1600
+		#define	__predict_true(x)	__builtin_expect((x) != 0, 1)
+		#define	__predict_false(x)	__builtin_expect((x) != 0, 0)
+	#endif //  _MSC_VER <= 1600
 #endif
 
 /*
@@ -71,15 +76,56 @@
  * then wrap the GCC builtin routines.
  */
 #ifndef atomic_compare_exchange_weak
-#define	atomic_compare_exchange_weak(ptr, expected, desired) \
-    __sync_bool_compare_and_swap(ptr, expected, desired)
+	#if defined(_MSC_VER) && defined(__cplusplus) && __cplusplus < 201103L
+		// Implement atomic compare-and-swap in pre-C++11 MSVC compilers.
+		//
+		// C++ doesn't support partial function template specialization, so
+		// do it with a structure with a static method. Inspired by
+		// https://stackoverflow.com/a/48218849/603828 .
+		//
+		// The parameters all have to be the same explicit type for this to work,
+		// e.g. you'll have to cast NULL or nullptr to a type.
+		template<typename T, size_t S> struct atomic_compare_exchange_weak_;
+		template<typename T> struct atomic_compare_exchange_weak_<T, sizeof(char)>
+			{ static inline bool call(T volatile *ptr, T expected, T desired)
+				{ return (_InterlockedCompareExchange8((char volatile *)ptr, (char)desired, (char)expected) == (char)expected); } };
+		template<typename T> struct atomic_compare_exchange_weak_<T, sizeof(short)>
+			{ static inline bool call(T volatile *ptr, T expected, T desired)
+				{ return (_InterlockedCompareExchange16((short volatile *)ptr, (short)desired, (short)expected) == (short)expected); } };
+		template<typename T> struct atomic_compare_exchange_weak_<T, sizeof(long)>
+			{ static inline bool call(T volatile *ptr, T expected, T desired)
+				{ return (_InterlockedCompareExchange((long volatile *)ptr, (long)desired, (long)expected) == (long)expected); } };
+		template<typename T> struct atomic_compare_exchange_weak_<T *, sizeof(long)>
+			{ static inline bool call(T * volatile *ptr, T *expected, T *desired)
+				{ return (_InterlockedCompareExchange((long volatile *)ptr, (long)desired, (long)expected) == (long)expected); } };
+		template<typename T> struct atomic_compare_exchange_weak_<T, sizeof(__int64)>
+			{ static inline bool call(T volatile *ptr, T expected, T desired)
+				{ return (_InterlockedCompareExchange64((__int64 volatile *)ptr, (__int64)desired, (__int64)expected) == (__int64)expected); } };
+		template<typename T> struct atomic_compare_exchange_weak_<T *, sizeof(__int64)>
+			{ static inline bool call(T * volatile *ptr, T *expected, T *desired)
+				{ return (_InterlockedCompareExchange64((__int64 volatile *)ptr, (__int64)desired, (__int64)expected) == (__int64)expected); } };
+		template<typename T> inline bool atomic_compare_exchange_weak(T volatile *ptr, T expected, T desired)
+			{ return atomic_compare_exchange_weak_<decltype(expected),sizeof(expected)>::call(ptr, expected, desired); }
+	#elif defined(_MSC_VER) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L)
+		// Implement the single needed atomic-compare-exchange for pre-C11 compilers.
+		#define	atomic_compare_exchange_weak(ptr, expected, desired) \
+			(_InterlockedCompareExchange64((volatile __int64 *)ptr, (__int64)desired, (__int64)expected) == (__int64)expected)
+	#else // GCC style
+		#define	atomic_compare_exchange_weak(ptr, expected, desired) \
+			__sync_bool_compare_and_swap(ptr, expected, desired)
+	#endif // compiler
 #endif
 
 #ifndef atomic_thread_fence
-#define	memory_order_acquire	__ATOMIC_ACQUIRE	// load barrier
-#define	memory_order_release	__ATOMIC_RELEASE	// store barrier
-#define	atomic_thread_fence(m)	__atomic_thread_fence(m)
-#endif
+	// Define atomic-operation fences before C11.
+	#if defined(_MSC_VER) && _MSC_VER <= 1600
+		#define atomic_thread_fence(x) ::MemoryBarrier()
+	#else //  _MSC_VER <= 1600
+		#define	memory_order_acquire	__ATOMIC_ACQUIRE	// load barrier
+		#define	memory_order_release	__ATOMIC_RELEASE	// store barrier
+		#define	atomic_thread_fence(m)	__atomic_thread_fence(m)
+	#endif //  _MSC_VER <= 1600
+#endif // !atomic_thread_fence
 
 /*
  * Exponential back-off for the spinning paths.
@@ -88,6 +134,8 @@
 #define	SPINLOCK_BACKOFF_MAX	128
 #if defined(__x86_64__) || defined(__i386__)
 #define SPINLOCK_BACKOFF_HOOK	__asm volatile("pause" ::: "memory")
+#elif defined(_MSC_VER)
+#define SPINLOCK_BACKOFF_HOOK	::YieldProcessor()
 #else
 #define SPINLOCK_BACKOFF_HOOK
 #endif
@@ -100,4 +148,4 @@ do {								\
 		(count) += (count);				\
 } while (/* CONSTCOND */ 0);
 
-#endif
+#endif // _UTILS_H_

@@ -59,8 +59,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#ifdef _WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#include "windows.h"
+#include <WinNT.h>
+#include <intrin.h>
+#include <stdint.h>
+#define true 1
+#define false 0
+#define inline __inline
+#else // _WINDOWS
 #include <stdbool.h>
 #include <inttypes.h>
+#endif // _WINDOWS
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
