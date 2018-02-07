@@ -75,11 +75,14 @@
 #define	WRAP_COUNTER	(0x7fffffff00000000UL)
 #define	WRAP_INCR(x)	(((x) + 0x100000000UL) & WRAP_COUNTER)
 
+#define	WORKER_NULL		(0x00000000ffffffffUL)
+
 typedef uint64_t	ringbuf_off_t;
+typedef uint64_t	worker_off_t;
 
 struct ringbuf_worker {
 	volatile ringbuf_off_t	seen_off;
-	ringbuf_worker_t *		next;
+	volatile worker_off_t	next;
 };
 
 struct ringbuf {
@@ -95,11 +98,11 @@ struct ringbuf {
 	ringbuf_off_t		end;
 
 	/* Track acquires that haven't finished producing yet. */
-	ringbuf_worker_t	*used_workers, *free_workers;
+	worker_off_t		used_workers, free_workers;
 
 	/* The following are updated by the consumer. */
 	ringbuf_off_t		written;
-	unsigned		nworkers;
+	unsigned			nworkers;
 	ringbuf_worker_t	workers[];
 };
 
@@ -119,9 +122,11 @@ ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
 	rbuf->nworkers = nworkers;
 
 	/* Put all workers into the free-stack. */
+	rbuf->used_workers = rbuf->free_workers = WORKER_NULL;
 	for (unsigned i = 0; i < rbuf->nworkers; i++) {
+		rbuf->workers[i].seen_off = RBUF_OFF_MAX;
 		rbuf->workers[i].next = rbuf->free_workers;
-		rbuf->free_workers = &(rbuf->workers[i]);
+		rbuf->free_workers = i;
 	}
 	return 0;
 }
@@ -146,34 +151,18 @@ ringbuf_get_sizes(unsigned nworkers,
 ringbuf_worker_t *
 ringbuf_register(ringbuf_t *rbuf, unsigned i)
 {
-	/* Get a worker-record, to track state between acquire & produce. */
-	ringbuf_worker_t *w, *new_free, *old_used;
-	do {
-		w = rbuf->free_workers;
-		if (!w)
-			return NULL;
-		new_free = w->next;
-	} while (!atomic_compare_exchange_weak(&rbuf->free_workers, w, new_free));
-
-	/* No acquire/produce being tracked yet. */
-	w->seen_off = RBUF_OFF_MAX;
-
-	/* Push this worker on top of the used-worker stack. */
-	do {
-		old_used = rbuf->used_workers;
-		w->next = old_used;
-	} while (!atomic_compare_exchange_weak(&rbuf->used_workers, old_used, w));
-
+	/* Deprecated. */
+	(void)rbuf;
 	(void)i;
-	return w;
+	return NULL;
 }
 
 void
 ringbuf_unregister(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
-	/* Mark this worker as unregistered. */
-	w->seen_off = (RBUF_OFF_MAX | WRAP_LOCK_BIT);
+	/* Deprecated. */
 	(void)rbuf;
+	(void)w;
 }
 
 /*
@@ -194,17 +183,131 @@ stable_nextoff(ringbuf_t *rbuf)
 }
 
 /*
+ * push_worker: push this worker-record onto the given stack.
+ */
+static inline void
+push_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head,
+	ringbuf_worker_t *w)
+{
+	worker_off_t w_offset, old_head, new_head;
+
+	/* Get the offset of the worker-record being pushed. */
+	w_offset = w - rbuf->workers;
+
+	/* Make sure this worker-record isn't on any stack already. */
+	ASSERT(w->next == WORKER_NULL);
+
+	do {
+		/* Get the offset of the next worker-record on the stack. */
+		old_head = *stack_head;
+
+		/*
+		 * Prepare to push that worker-record onto the stack,
+		 * i.e. increment the version-number of the stack-head index.
+		 *
+		 * Since this worker-record isn't on any stack at this point,
+		 * nothing about its next-offset (including its version-number)
+		 * has to be preserved.
+		 */
+		w->next = (old_head & RBUF_OFF_MASK);
+		new_head = (w_offset | WRAP_INCR(old_head));
+	} while (!atomic_compare_exchange_weak(stack_head, old_head, new_head));
+}
+
+/*
+ * pop_worker: pop a worker-record from the given stack.
+ */
+static inline ringbuf_worker_t *
+pop_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_head)
+{
+	worker_off_t old_head, new_head;
+	ringbuf_worker_t *w;
+
+	do {
+		worker_off_t old_head_offset;
+
+		/* Get the offset of the worker-record on top of the stack. */
+		old_head = *stack_head;
+		old_head_offset = (old_head & RBUF_OFF_MASK);
+		if (old_head_offset == WORKER_NULL)
+			return NULL;
+
+		/* Find that worker-record. */
+		w = &rbuf->workers[old_head_offset];
+
+		/*
+		 * Prepare to pop that worker-record off of the stack,
+		 * i.e. increment the version-number of the stack-head index.
+		 */
+		new_head = (w->next & RBUF_OFF_MASK);
+		new_head |= WRAP_INCR(old_head);
+	} while (!atomic_compare_exchange_weak(stack_head, old_head, new_head));
+
+	/*
+	 * Since this worker-record isn't on any stack at this point,
+	 * nothing about its next-offset (including its version-number)
+	 * has to be preserved.
+	 */
+	w->next = WORKER_NULL;
+
+	return w;
+}
+
+/*
+ * try_unlink_worker: try to unlink a worker-record from a stack.
+ */
+static inline bool
+try_unlink_worker(ringbuf_t *rbuf, worker_off_t volatile *stack_link,
+	worker_off_t old_link)
+{
+	ringbuf_worker_t *w;
+	worker_off_t old_link_offset, new_link;
+	bool success;
+
+	/* Find that worker-record. */
+	old_link_offset = (old_link & RBUF_OFF_MASK);
+	ASSERT (old_link_offset != WORKER_NULL);
+	w = &rbuf->workers[old_link_offset];
+
+	/*
+	 * Prepare to unlink that worker-record from the stack,
+	 * i.e. increment the version-number of the stack-link index.
+	 */
+	new_link = (w->next & RBUF_OFF_MASK);
+	new_link |= WRAP_INCR(old_link);
+	success = atomic_compare_exchange_weak(stack_link, old_link, new_link);
+
+	/*
+	 * Since this worker-record isn't on any stack at this point,
+	 * nothing about its next-offset (including its version-number)
+	 * has to be preserved.
+	 */
+	if (success)
+		w->next = WORKER_NULL;
+
+	return success;
+}
+
+/*
  * ringbuf_acquire: request a space of a given length in the ring buffer.
  *
  * => On success: returns the offset at which the space is available.
  * => On failure: returns -1.
  */
 ssize_t
-ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
+ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t **pw, size_t len)
 {
 	ringbuf_off_t seen, next, target;
+	ringbuf_worker_t *w;
+	ringbuf_off_t seen_off;
 
 	ASSERT(len > 0 && len <= rbuf->space);
+
+	/* Get a worker-record, to track state between acquire & produce. */
+	*pw = NULL;
+	w = pop_worker(rbuf, &rbuf->free_workers);
+	if (w == NULL)
+		return -1;
 	ASSERT(w->seen_off == RBUF_OFF_MAX);
 
 	do {
@@ -222,7 +325,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		seen = stable_nextoff(rbuf);
 		next = seen & RBUF_OFF_MASK;
 		ASSERT(next < rbuf->space);
-		w->seen_off = next | WRAP_LOCK_BIT;
+		seen_off = next | WRAP_LOCK_BIT;
 
 		/*
 		 * Compute the target offset.  Key invariant: we cannot
@@ -231,8 +334,10 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		target = next + len;
 		written = rbuf->written;
 		if (__predict_false(next < written && target >= written)) {
+			/* Free this unused worker-record. */
+			push_worker(rbuf, &rbuf->free_workers, w);
+
 			/* The producer must wait. */
-			w->seen_off = RBUF_OFF_MAX;
 			return -1;
 		}
 
@@ -251,7 +356,9 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 			 */
 			target = exceed ? (WRAP_LOCK_BIT | len) : 0;
 			if ((target & RBUF_OFF_MASK) >= written) {
-				w->seen_off = RBUF_OFF_MAX;
+				/* Free this unused worker-record. */
+				push_worker(rbuf, &rbuf->free_workers, w);
+
 				return -1;
 			}
 			/* Increment the wrap-around counter. */
@@ -266,7 +373,11 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 	 * Acquired the range.  Clear WRAP_LOCK_BIT in the 'seen' value
 	 * thus indicating that it is stable now.
 	 */
-	w->seen_off &= ~WRAP_LOCK_BIT;
+	w->seen_off = (seen_off & ~WRAP_LOCK_BIT);
+	push_worker(rbuf, &rbuf->used_workers, w);
+
+	/* Hand this worker-record back to our caller. */
+	*pw = w;
 
 	/*
 	 * If we set the WRAP_LOCK_BIT in the 'next' (because we exceed
@@ -299,7 +410,7 @@ void
 ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *w)
 {
 	(void)rbuf;
-	ASSERT((w->seen_off & ~WRAP_LOCK_BIT) != RBUF_OFF_MAX);
+	ASSERT(w->seen_off != RBUF_OFF_MAX);
 	atomic_thread_fence(memory_order_release);
 	w->seen_off = RBUF_OFF_MAX;
 }
@@ -311,8 +422,8 @@ size_t
 ringbuf_consume(ringbuf_t *rbuf, size_t *offset)
 {
 	ringbuf_off_t written = rbuf->written, next, ready;
-	ringbuf_worker_t *w;
-	ringbuf_worker_t * volatile *pw;
+	worker_off_t volatile *pw_link;
+	worker_off_t w_link, w_off;
 	size_t towrite;
 retry:
 	/*
@@ -336,52 +447,53 @@ retry:
 	 */
 	ready = RBUF_OFF_MAX;
 
-	w = rbuf->used_workers;
-	pw = &rbuf->used_workers;
-	while (w) {
+	pw_link = &rbuf->used_workers;
+	w_link = *pw_link;
+	w_off = (w_link & RBUF_OFF_MASK);
+	while (w_off != WORKER_NULL) {
+		ringbuf_worker_t *w = &rbuf->workers[w_off];
 		unsigned count = SPINLOCK_BACKOFF_MIN;
 		ringbuf_off_t seen_off;
 
-		/* If this worker has been unregistered, try to clean it up. */
-		if (w->seen_off == (RBUF_OFF_MAX | WRAP_LOCK_BIT)) {
-			ringbuf_worker_t *old_free;
-
-			/*
-			 * Remove this worker from the used-worker stack.
-			 * If it can't be, try again later.
-			 */
-			if (atomic_compare_exchange_weak(pw, w, w->next)) {
-				/* Push this unused worker on top of the free-worker stack. */
-				do {
-					old_free = rbuf->free_workers;
-					w->next = old_free;
-				} while (!atomic_compare_exchange_weak(&rbuf->free_workers, old_free, w));
-				w = w->next;
-				continue;
-			}
-		} else {
-			/*
-			 * Get a stable 'seen' value.  This is necessary since we
-			 * want to discard the stale 'seen' values.
-			 */
-			while ((seen_off = w->seen_off) & WRAP_LOCK_BIT) {
-				SPINLOCK_BACKOFF(count);
-			}
-
-			/*
-			 * Ignore the offsets after the possible wrap-around.
-			 * We are interested in the smallest seen offset that is
-			 * not behind the 'written' offset.
-			 */
-			if (seen_off >= written) {
-				ready = MIN(seen_off, ready);
-			}
-			ASSERT(ready >= written);
+		/*
+		 * Get a stable 'seen' value.  This is necessary since we
+		 * want to discard the stale 'seen' values.
+		 */
+		while ((seen_off = w->seen_off) & WRAP_LOCK_BIT) {
+			SPINLOCK_BACKOFF(count);
 		}
 
+		/* If this worker has produced, clean it up. */
+		if (seen_off == RBUF_OFF_MAX) {
+			/*
+			 * Try to unlink this worker-record from the used-worker
+			 * stack.
+			 * If it can't be done, try again later.
+			 */
+			if (try_unlink_worker(rbuf, pw_link, w_link)) {
+				/* Free this unused worker-record. */
+				w->seen_off = RBUF_OFF_MAX;
+				push_worker(rbuf, &rbuf->free_workers, w);
+				w_link = *pw_link;
+				w_off = (w_link & RBUF_OFF_MASK);
+				continue;
+			}
+		}
+
+		/*
+		 * Ignore the offsets after the possible wrap-around.
+		 * We are interested in the smallest seen offset that is
+		 * not behind the 'written' offset.
+		 */
+		if (seen_off >= written) {
+			ready = MIN(seen_off, ready);
+		}
+		ASSERT(ready >= written);
+
 		/* Move to the next incomplete acquire/produce operation. */
-		pw = &w->next;
-		w = w->next;
+		pw_link = &w->next;
+		w_link = *pw_link;
+		w_off = (w_link & RBUF_OFF_MASK);
 	}
 
 	/*

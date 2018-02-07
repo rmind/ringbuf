@@ -103,9 +103,6 @@ ringbuf_stress(void *arg)
 	const unsigned id = (uintptr_t)arg;
 	ringbuf_worker_t *w;
 
-	w = ringbuf_register(ringbuf, id);
-	assert(w != NULL);
-
 	/*
 	 * There are NCPU threads concurrently generating and producing
 	 * random messages and a single consumer thread (ID 0) verifying
@@ -136,7 +133,7 @@ ringbuf_stress(void *arg)
 			continue;
 		}
 		len = generate_message(buf, sizeof(buf) - 1);
-		if ((ret = ringbuf_acquire(ringbuf, w, len)) != -1) {
+		if ((ret = ringbuf_acquire(ringbuf, &w, len)) != -1) {
 			off = (size_t)ret;
 			assert(off < RBUF_SIZE);
 			memcpy(&rbuf[off], buf, len);
