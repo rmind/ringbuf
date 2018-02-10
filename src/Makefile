@@ -2,7 +2,7 @@
 # This file is in the Public Domain.
 #
 
-CFLAGS=		-std=c11 -O2 -g -W -Wextra -Werror
+CFLAGS=		-std=c11 -g -W -Wextra -Werror
 CFLAGS+=	-D_POSIX_C_SOURCE=200809L
 CFLAGS+=	-D_GNU_SOURCE -D_DEFAULT_SOURCE
 
@@ -23,7 +23,7 @@ endif
 ifeq ($(DEBUG),1)
 CFLAGS+=	-O0 -DDEBUG -fno-omit-frame-pointer
 else
-CFLAGS+=	-DNDEBUG
+CFLAGS+=	-O2 -DNDEBUG
 endif
 
 LIB=		libringbuf
