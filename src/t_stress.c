@@ -102,8 +102,10 @@ ringbuf_stress(void *arg)
 {
 	const unsigned id = (uintptr_t)arg;
 	ringbuf_worker_t *w = NULL;
-	//ringbuf_worker_t *w = ringbuf_register(ringbuf);
-	//assert (w != NULL);
+	if (id == 1) {
+		w = ringbuf_register(ringbuf);
+		assert (w != NULL);
+	}
 	uint64_t total_recv = 0;
 
 	/*
