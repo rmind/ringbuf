@@ -183,18 +183,12 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 			if (!atomic_compare_exchange_weak(&w->registered, not_registered, being_registered))
 				continue;
 			acquired = true;
+			w->seen_off = RBUF_OFF_MAX;
+			atomic_thread_fence(memory_order_release);
+			w->registered = registration_type;
 
-			/* Swap the indexes to exclusively acquire the worker-record. */
-			if (atomic_compare_exchange_weak(p_free_worker, prev_free_worker, new_free_worker)) {
-				w->seen_off = RBUF_OFF_MAX;
-				atomic_thread_fence(memory_order_release);
-				w->registered = registration_type;
-				break;
-			}
-
-			/* The worker-record was not successfully acquired. */
-			w->registered = not_registered;
-			acquired = false;
+			/* Advance the index if no one else has. */
+			atomic_compare_exchange_weak(p_free_worker, prev_free_worker, new_free_worker);
 		}
 	}
 

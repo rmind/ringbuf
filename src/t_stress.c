@@ -106,7 +106,7 @@ ringbuf_stress(void *arg)
 		w = ringbuf_register(ringbuf);
 		assert (w != NULL);
 	}
-	uint64_t total_recv = 0;
+	uint64_t total_xmit = 0, total_not_xmit = 0;
 
 	/*
 	 * There are NCPU threads concurrently generating and producing
@@ -125,7 +125,7 @@ ringbuf_stress(void *arg)
 
 		if (id == 0) {
 			if ((len = ringbuf_consume(ringbuf, &off)) != 0) {
-				total_recv += len;
+				total_xmit += len;
 				size_t rem = len;
 				assert(off < RBUF_SIZE);
 				while (rem) {
@@ -140,15 +140,20 @@ ringbuf_stress(void *arg)
 		}
 		len = generate_message(buf, sizeof(buf) - 1);
 		if ((ret = ringbuf_acquire(ringbuf, &w, len)) != -1) {
+			total_xmit += len;
 			off = (size_t)ret;
 			assert(off < RBUF_SIZE);
 			memcpy(&rbuf[off], buf, len);
 			ringbuf_produce(ringbuf, &w);
-		}
+		} else
+			total_not_xmit += len;
 	}
 	pthread_barrier_wait(&barrier);
 	if (id == 0)
-		printf ("Total received: %" PRIu64 "\n", total_recv);
+		printf ("Thread 0: received %" PRIu64 "\n", total_xmit);
+	else
+		printf ("Thread %d: sent %" PRIu64 ", unsent %" PRIu64 "\n",
+			id, total_xmit, total_not_xmit);
 	pthread_exit(NULL);
 	return NULL;
 }
