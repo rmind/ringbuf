@@ -162,23 +162,17 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 		worker_off_t prev_free_worker, old_free_worker, new_free_worker,
 			i;
 
-		/*
-		 * Get the current range of used worker-records, after trying
-		 * to prune recently-unregistered workers.
-		 */
+		/* Get the index of the first worker-record to try registering. */
 		prev_free_worker = *p_free_worker;
 
-		/* Exclusively acquire a worker-record index. */
 		for (i = 0; !acquired && i < rbuf->nworkers; ++i) {
 			/* Prepare to acquire a worker-record index. */
 			old_free_worker = (*p_free_worker);
-			if (old_free_worker != prev_free_worker)
-				break;
 			new_free_worker = ((old_free_worker & RBUF_OFF_MASK)
 				+ i) % rbuf->nworkers;
 			new_free_worker |= WRAP_INCR(old_free_worker);
 
-			/* Remember that this worker-record is being registered. */
+			/* Try to acquire a worker-record. */
 			w = &rbuf->workers[new_free_worker & RBUF_OFF_MASK];
 			if (!atomic_compare_exchange_weak(&w->registered, not_registered, being_registered))
 				continue;
@@ -190,6 +184,13 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 			/* Advance the index if no one else has. */
 			atomic_compare_exchange_weak(p_free_worker, prev_free_worker, new_free_worker);
 		}
+
+		/*
+		 * If no worker-record could be registered, and no one else was
+		 * trying to register at the same time, then stop searching.
+		 */
+		if (!acquired && old_free_worker == prev_free_worker)
+			break;
 	}
 
 	/* Register this worker-record. */
