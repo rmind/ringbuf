@@ -101,10 +101,12 @@ static void *
 ringbuf_stress(void *arg)
 {
 	const unsigned id = (uintptr_t)arg;
-	ringbuf_worker_t *w;
-
-	w = ringbuf_register(ringbuf, id);
-	assert(w != NULL);
+	ringbuf_worker_t *w = NULL;
+	if (id == 1) {
+		w = ringbuf_register(ringbuf, 0);
+		assert (w != NULL);
+	}
+	uint64_t total_xmit = 0, total_not_xmit = 0;
 
 	/*
 	 * There are NCPU threads concurrently generating and producing
@@ -123,6 +125,7 @@ ringbuf_stress(void *arg)
 
 		if (id == 0) {
 			if ((len = ringbuf_consume(ringbuf, &off)) != 0) {
+				total_xmit += len;
 				size_t rem = len;
 				assert(off < RBUF_SIZE);
 				while (rem) {
@@ -136,14 +139,21 @@ ringbuf_stress(void *arg)
 			continue;
 		}
 		len = generate_message(buf, sizeof(buf) - 1);
-		if ((ret = ringbuf_acquire(ringbuf, w, len)) != -1) {
+		if ((ret = ringbuf_acquire(ringbuf, &w, len)) != -1) {
+			total_xmit += len;
 			off = (size_t)ret;
 			assert(off < RBUF_SIZE);
 			memcpy(&rbuf[off], buf, len);
-			ringbuf_produce(ringbuf, w);
-		}
+			ringbuf_produce(ringbuf, &w);
+		} else
+			total_not_xmit += len;
 	}
 	pthread_barrier_wait(&barrier);
+	if (id == 0)
+		printf ("Thread 0: received %" PRIu64 "\n", total_xmit);
+	else
+		printf ("Thread %d: sent %" PRIu64 ", unsent %" PRIu64 "\n",
+			id, total_xmit, total_not_xmit);
 	pthread_exit(NULL);
 	return NULL;
 }
@@ -178,11 +188,11 @@ run_test(void *func(void *))
 	/*
 	 * Create a ring buffer.
 	 */
-	ringbuf_get_sizes(nworkers, &ringbuf_obj_size, NULL);
+	ringbuf_get_sizes(1, nworkers, &ringbuf_obj_size, NULL);
 	ringbuf = malloc(ringbuf_obj_size);
 	assert(ringbuf != NULL);
 
-	ringbuf_setup(ringbuf, nworkers, RBUF_SIZE);
+	ringbuf_setup(ringbuf, 1, nworkers, RBUF_SIZE);
 	memset(rbuf, MAGIC_BYTE, sizeof(rbuf));
 
 	/*
