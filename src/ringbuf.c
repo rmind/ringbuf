@@ -109,7 +109,7 @@ struct ringbuf {
 
 	/* The following are updated by the consumer. */
 	ringbuf_off_t		written;
-	unsigned		nworkers;
+	unsigned		nworkers, ntempworkers;
 	ringbuf_worker_t	workers[];
 };
 
@@ -117,16 +117,17 @@ struct ringbuf {
  * ringbuf_setup: initialise a new ring buffer of a given length.
  */
 int
-ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
+ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, unsigned ntempworkers, size_t length)
 {
 	if (length >= RBUF_OFF_MASK) {
 		errno = EINVAL;
 		return -1;
 	}
-	memset(rbuf, 0, offsetof(ringbuf_t, workers[nworkers]));
+	memset(rbuf, 0, offsetof(ringbuf_t, workers[nworkers + ntempworkers]));
 	rbuf->space = length;
 	rbuf->end = RBUF_OFF_MAX;
 	rbuf->nworkers = nworkers;
+	rbuf->ntempworkers = ntempworkers;
 	return 0;
 }
 
@@ -134,11 +135,11 @@ ringbuf_setup(ringbuf_t *rbuf, unsigned nworkers, size_t length)
  * ringbuf_get_sizes: return the sizes of the ringbuf_t and ringbuf_worker_t.
  */
 void
-ringbuf_get_sizes(unsigned nworkers,
+ringbuf_get_sizes(unsigned nworkers, unsigned ntempworkers,
     size_t *ringbuf_size, size_t *ringbuf_worker_size)
 {
 	if (ringbuf_size)
-		*ringbuf_size = offsetof(ringbuf_t, workers[nworkers]);
+		*ringbuf_size = offsetof(ringbuf_t, workers[nworkers + ntempworkers]);
 	if (ringbuf_worker_size)
 		*ringbuf_worker_size = sizeof(ringbuf_worker_t);
 }
@@ -159,21 +160,20 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 	p_free_worker = &rbuf->first_free_worker;
 	acquired = false;
 	while (!acquired) {
-		worker_off_t prev_free_worker, old_free_worker, new_free_worker,
-			i;
+		worker_off_t prev_free_worker, i;
 
 		/* Get the index of the first worker-record to try registering. */
 		prev_free_worker = *p_free_worker;
 
-		for (i = 0; !acquired && i < rbuf->nworkers; ++i) {
+		for (i = 0; !acquired && i < rbuf->ntempworkers; ++i) {
+			worker_off_t new_free_worker;
+
 			/* Prepare to acquire a worker-record index. */
-			old_free_worker = (*p_free_worker);
-			new_free_worker = ((old_free_worker & RBUF_OFF_MASK)
-				+ i) % rbuf->nworkers;
-			new_free_worker |= WRAP_INCR(old_free_worker);
+			new_free_worker = ((prev_free_worker & RBUF_OFF_MASK)
+				+ i) % rbuf->ntempworkers;
 
 			/* Try to acquire a worker-record. */
-			w = &rbuf->workers[new_free_worker & RBUF_OFF_MASK];
+			w = &rbuf->workers[new_free_worker + rbuf->nworkers];
 			if (!atomic_compare_exchange_weak(&w->registered, not_registered, being_registered))
 				continue;
 			acquired = true;
@@ -182,6 +182,7 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 			w->registered = registration_type;
 
 			/* Advance the index if no one else has. */
+			new_free_worker |= WRAP_INCR(prev_free_worker);
 			atomic_compare_exchange_weak(p_free_worker, prev_free_worker, new_free_worker);
 		}
 
@@ -189,7 +190,7 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 		 * If no worker-record could be registered, and no one else was
 		 * trying to register at the same time, then stop searching.
 		 */
-		if (!acquired && old_free_worker == prev_free_worker)
+		if (!acquired && (*p_free_worker) == prev_free_worker)
 			break;
 	}
 
@@ -202,9 +203,16 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
  * and pass the pointer to its local store.
  */
 ringbuf_worker_t *
-ringbuf_register(ringbuf_t *rbuf)
+ringbuf_register(ringbuf_t *rbuf, unsigned i)
 {
-	return register_worker(rbuf, perm_registered);
+	ASSERT (i < rbuf->nworkers);
+
+	ringbuf_worker_t *w = &rbuf->workers[i];
+
+	w->seen_off = RBUF_OFF_MAX;
+	atomic_thread_fence(memory_order_release);
+	w->registered = perm_registered;
+	return w;
 }
 
 void
@@ -381,6 +389,7 @@ ringbuf_consume(ringbuf_t *rbuf, size_t *offset)
 {
 	ringbuf_off_t written = rbuf->written, next, ready;
 	size_t towrite;
+	unsigned total_workers;
 retry:
 	/*
 	 * Get the stable 'next' offset.  Note: stable_nextoff() issued
@@ -403,7 +412,8 @@ retry:
 	 */
 	ready = RBUF_OFF_MAX;
 
-	for (unsigned i = 0; i < rbuf->nworkers; i++) {
+	total_workers = rbuf->nworkers + rbuf->ntempworkers;
+	for (unsigned i = 0; i < total_workers; i++) {
 		ringbuf_worker_t *w = &rbuf->workers[i];
 		unsigned count = SPINLOCK_BACKOFF_MIN;
 		ringbuf_off_t seen_off;

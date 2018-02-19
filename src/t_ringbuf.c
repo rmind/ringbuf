@@ -11,7 +11,8 @@
 
 #include "ringbuf.h"
 
-#define	MAX_WORKERS	3
+#define	MAX_WORKERS	1
+#define MAX_TEMP_WORKERS 3
 
 static size_t		ringbuf_obj_size;
 
@@ -25,7 +26,7 @@ test_wraparound(void)
 	ssize_t off;
 
 	/* Size n, but only (n - 1) can be produced at a time. */
-	ringbuf_setup(r, MAX_WORKERS, n);
+	ringbuf_setup(r, MAX_WORKERS, MAX_TEMP_WORKERS, n);
 
 	/* Produce (n / 2 + 1) and then attempt another (n / 2 - 1). */
 	off = ringbuf_acquire(r, &w, n / 2 + 1);
@@ -65,7 +66,7 @@ test_multi(void)
 	size_t len, woff;
 	ssize_t off;
 
-	ringbuf_setup(r, MAX_WORKERS, 3);
+	ringbuf_setup(r, MAX_WORKERS, MAX_TEMP_WORKERS, 3);
 
 	/*
 	 * Produce 2 bytes.
@@ -133,7 +134,7 @@ test_overlap(void)
 	size_t len, woff;
 	ssize_t off;
 
-	ringbuf_setup(r, MAX_WORKERS, 10);
+	ringbuf_setup(r, MAX_WORKERS, MAX_TEMP_WORKERS, 10);
 
 	/*
 	 * Producer 1: acquire 5 bytes.  Consumer should fail.
@@ -203,7 +204,7 @@ test_random(void)
 	unsigned n = 1000 * 1000 * 50;
 	unsigned char buf[500];
 
-	ringbuf_setup(r, MAX_WORKERS, sizeof(buf));
+	ringbuf_setup(r, MAX_WORKERS, MAX_TEMP_WORKERS, sizeof(buf));
 
 	while (n--) {
 		size_t len, woff;
@@ -257,7 +258,7 @@ test_random(void)
 int
 main(void)
 {
-	ringbuf_get_sizes(MAX_WORKERS, &ringbuf_obj_size, NULL);
+	ringbuf_get_sizes(MAX_WORKERS, MAX_TEMP_WORKERS, &ringbuf_obj_size, NULL);
 	test_wraparound();
 	test_multi();
 	test_overlap();
