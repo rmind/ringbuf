@@ -6,11 +6,20 @@ CFLAGS=		-std=c11 -O2 -g -W -Wextra -Werror
 CFLAGS+=	-D_POSIX_C_SOURCE=200809L
 CFLAGS+=	-D_GNU_SOURCE -D_DEFAULT_SOURCE
 
+#
+# Extended warning flags.
+#
+CFLAGS+=	-Wno-unknown-warning-option # gcc vs clang
+
 CFLAGS+=	-Wstrict-prototypes -Wmissing-prototypes -Wpointer-arith
 CFLAGS+=	-Wmissing-declarations -Wredundant-decls -Wnested-externs
 CFLAGS+=	-Wshadow -Wcast-qual -Wcast-align -Wwrite-strings
 CFLAGS+=	-Wold-style-definition
-#CFLAGS+=	-Wsuggest-attribute=noreturn -Wjump-misses-init
+CFLAGS+=	-Wsuggest-attribute=noreturn -Wjump-misses-init
+
+# New GCC 6/7 flags:
+#CFLAGS+=	-Wduplicated-cond -Wmisleading-indentation -Wnull-dereference
+#CFLAGS+=	-Wduplicated-branches -Wrestrict
 
 ifeq ($(MAKECMDGOALS),tests)
 DEBUG=		1
@@ -21,7 +30,7 @@ DEBUG=		1
 endif
 
 ifeq ($(DEBUG),1)
-CFLAGS+=	-O0 -DDEBUG -fno-omit-frame-pointer
+CFLAGS+=	-Og -DDEBUG -fno-omit-frame-pointer
 else
 CFLAGS+=	-DNDEBUG
 endif
@@ -61,6 +70,7 @@ tests: $(OBJS) t_ringbuf.o
 
 stress: $(OBJS) t_stress.o
 	$(CC) $(CFLAGS) $^ -o t_stress $(LDFLAGS) -lpthread
+	./t_stress
 
 clean:
 	libtool --mode=clean rm

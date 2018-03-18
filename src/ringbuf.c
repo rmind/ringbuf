@@ -140,7 +140,7 @@ ringbuf_register(ringbuf_t *rbuf, unsigned i)
 	ringbuf_worker_t *w = &rbuf->workers[i];
 
 	w->seen_off = RBUF_OFF_MAX;
-	atomic_thread_fence(memory_order_release);
+	atomic_thread_fence(memory_order_stores);
 	w->registered = true;
 	return w;
 }
@@ -164,7 +164,7 @@ stable_nextoff(ringbuf_t *rbuf)
 	while ((next = rbuf->next) & WRAP_LOCK_BIT) {
 		SPINLOCK_BACKOFF(count);
 	}
-	atomic_thread_fence(memory_order_acquire);
+	atomic_thread_fence(memory_order_loads);
 	ASSERT((next & RBUF_OFF_MASK) < rbuf->space);
 	return next;
 }
@@ -260,7 +260,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		 * Unlock: ensure the 'end' offset reaches global
 		 * visibility before the lock is released.
 		 */
-		atomic_thread_fence(memory_order_release);
+		atomic_thread_fence(memory_order_stores);
 		rbuf->next = (target & ~WRAP_LOCK_BIT);
 	}
 	ASSERT((target & RBUF_OFF_MASK) <= rbuf->space);
@@ -277,7 +277,7 @@ ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *w)
 	(void)rbuf;
 	ASSERT(w->registered);
 	ASSERT(w->seen_off != RBUF_OFF_MAX);
-	atomic_thread_fence(memory_order_release);
+	atomic_thread_fence(memory_order_stores);
 	w->seen_off = RBUF_OFF_MAX;
 }
 
@@ -361,7 +361,7 @@ retry:
 			 */
 			if (rbuf->end != RBUF_OFF_MAX) {
 				rbuf->end = RBUF_OFF_MAX;
-				atomic_thread_fence(memory_order_release);
+				atomic_thread_fence(memory_order_stores);
 			}
 			/* Wrap-around the consumer and start from zero. */
 			rbuf->written = written = 0;

@@ -76,9 +76,21 @@
 #endif
 
 #ifndef atomic_thread_fence
-#define	memory_order_acquire	__ATOMIC_ACQUIRE	// load barrier
-#define	memory_order_release	__ATOMIC_RELEASE	// store barrier
+#define	memory_order_acquire	__ATOMIC_ACQUIRE
+#define	memory_order_release	__ATOMIC_RELEASE
+#define	memory_order_seq_cst	__ATOMIC_SEQ_CST
 #define	atomic_thread_fence(m)	__atomic_thread_fence(m)
+#endif
+
+/*
+ * C11 memory model does not support classic load/store barriers.
+ * Emulate it using the using the full memory barrier.
+ */
+#ifndef memory_order_loads
+#define	memory_order_loads	memory_order_seq_cst
+#endif
+#ifndef memory_order_stores
+#define	memory_order_stores	memory_order_seq_cst
 #endif
 
 /*
