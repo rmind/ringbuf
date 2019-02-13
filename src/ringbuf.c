@@ -140,8 +140,8 @@ ringbuf_register(ringbuf_t *rbuf, unsigned i)
 	ringbuf_worker_t *w = &rbuf->workers[i];
 
 	w->seen_off = RBUF_OFF_MAX;
-	atomic_thread_fence(memory_order_stores);
-	w->registered = true;
+	atomic_thread_fence(memory_order_release);
+	atomic_store_explicit(&w->registered, true, memory_order_relaxed);
 	return w;
 }
 
@@ -160,11 +160,13 @@ stable_nextoff(ringbuf_t *rbuf)
 {
 	unsigned count = SPINLOCK_BACKOFF_MIN;
 	ringbuf_off_t next;
-
-	while ((next = rbuf->next) & WRAP_LOCK_BIT) {
+retry:
+	next = atomic_load_explicit(&rbuf->next, memory_order_relaxed);
+	if (next & WRAP_LOCK_BIT) {
 		SPINLOCK_BACKOFF(count);
+		goto retry;
 	}
-	atomic_thread_fence(memory_order_loads);
+	atomic_thread_fence(memory_order_acquire);
 	ASSERT((next & RBUF_OFF_MASK) < rbuf->space);
 	return next;
 }
@@ -260,8 +262,9 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		 * Unlock: ensure the 'end' offset reaches global
 		 * visibility before the lock is released.
 		 */
-		atomic_thread_fence(memory_order_stores);
-		rbuf->next = (target & ~WRAP_LOCK_BIT);
+		atomic_thread_fence(memory_order_release);
+		atomic_store_explicit(&rbuf->next,
+		    (target & ~WRAP_LOCK_BIT), memory_order_relaxed);
 	}
 	ASSERT((target & RBUF_OFF_MASK) <= rbuf->space);
 	return (ssize_t)next;
@@ -277,8 +280,8 @@ ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *w)
 	(void)rbuf;
 	ASSERT(w->registered);
 	ASSERT(w->seen_off != RBUF_OFF_MAX);
-	atomic_thread_fence(memory_order_stores);
-	w->seen_off = RBUF_OFF_MAX;
+	atomic_thread_fence(memory_order_release);
+	atomic_store_explicit(&w->seen_off, RBUF_OFF_MAX, memory_order_relaxed);
 }
 
 /*
@@ -361,10 +364,12 @@ retry:
 			 */
 			if (rbuf->end != RBUF_OFF_MAX) {
 				rbuf->end = RBUF_OFF_MAX;
-				atomic_thread_fence(memory_order_stores);
+				atomic_thread_fence(memory_order_release);
 			}
 			/* Wrap-around the consumer and start from zero. */
-			rbuf->written = written = 0;
+			written = 0;
+			atomic_store_explicit(&rbuf->written,
+			    written, memory_order_relaxed);
 			goto retry;
 		}
 
