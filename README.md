@@ -37,7 +37,8 @@ passing.  The implementation is written in C11 and distributed under the
   * Request a space of a given length in the ring buffer.  Returns the
   offset at which the space is available or -1 on failure.  Once the data
   is ready (typically, when writing to the ring buffer is complete), the
-  `ringbuf_produce` function must be called to indicate that.
+  `ringbuf_produce` function must be called to indicate that.  Nested
+  acquire calls are not allowed.
 
 * `void ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *worker)`
   * Indicate that the acquired range in the buffer is produced and is ready

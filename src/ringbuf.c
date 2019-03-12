@@ -53,7 +53,7 @@
  *	which could be observed by the consumer.  We set WRAP_LOCK_BIT in
  *	the 'seen' value before advancing the 'next' and clear this bit
  *	after the successful advancing; this ensures that only the stable
- *	'ready' observed by the consumer.
+ *	'ready' is observed by the consumer.
  */
 
 #include <stdio.h>
