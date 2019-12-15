@@ -1,10 +1,27 @@
-sudo: required
-dist: trusty
-
 language: c
 
 compiler:
   - gcc
   - clang
 
-script: cd src && make tests && make stress
+dist: bionic
+
+matrix:
+  include:
+    - os: linux
+      arch: amd64
+    - os: linux
+      arch: arm64
+    #- os: linux
+    #  arch: ppc64le
+
+addons:
+  apt:
+    update: true
+    packages:
+    - build-essential
+    - libtool
+    - libtool-bin
+
+script:
+  - (cd src && make clean && make tests && make stress)

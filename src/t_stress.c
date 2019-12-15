@@ -201,6 +201,7 @@ run_test(void *func(void *))
 	}
 	pthread_barrier_destroy(&barrier);
 	free(ringbuf);
+	free(thr);
 }
 
 int
