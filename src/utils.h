@@ -69,10 +69,14 @@
 /*
  * Atomic operations and memory barriers.  If C11 API is not available,
  * then wrap the GCC builtin routines.
+ *
+ * Note: This atomic_compare_exchange_weak does not do the C11 thing of
+ * filling *(expected) with the actual value, because we don't need
+ * that here.
  */
 #ifndef atomic_compare_exchange_weak
 #define	atomic_compare_exchange_weak(ptr, expected, desired) \
-    __sync_bool_compare_and_swap(ptr, expected, desired)
+    __sync_bool_compare_and_swap(ptr, *(expected), desired)
 #endif
 
 #ifndef atomic_thread_fence

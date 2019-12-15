@@ -12,8 +12,8 @@ matrix:
       arch: amd64
     - os: linux
       arch: arm64
-    #- os: linux
-    #  arch: ppc64le
+    - os: linux
+      arch: ppc64le
 
 addons:
   apt:

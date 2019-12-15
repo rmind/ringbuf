@@ -140,8 +140,7 @@ ringbuf_register(ringbuf_t *rbuf, unsigned i)
 	ringbuf_worker_t *w = &rbuf->workers[i];
 
 	w->seen_off = RBUF_OFF_MAX;
-	atomic_thread_fence(memory_order_release);
-	atomic_store_explicit(&w->registered, true, memory_order_relaxed);
+	atomic_store_explicit(&w->registered, true, memory_order_release);
 	return w;
 }
 
@@ -161,14 +160,30 @@ stable_nextoff(ringbuf_t *rbuf)
 	unsigned count = SPINLOCK_BACKOFF_MIN;
 	ringbuf_off_t next;
 retry:
-	next = atomic_load_explicit(&rbuf->next, memory_order_relaxed);
+	next = atomic_load_explicit(&rbuf->next, memory_order_acquire);
 	if (next & WRAP_LOCK_BIT) {
 		SPINLOCK_BACKOFF(count);
 		goto retry;
 	}
-	atomic_thread_fence(memory_order_acquire);
 	ASSERT((next & RBUF_OFF_MASK) < rbuf->space);
 	return next;
+}
+
+/*
+ * stable_seenoff: capture and return a stable value of the 'seen' offset.
+ */
+static inline ringbuf_off_t
+stable_seenoff(ringbuf_worker_t *w)
+{
+	unsigned count = SPINLOCK_BACKOFF_MIN;
+	ringbuf_off_t seen_off;
+retry:
+	seen_off = atomic_load_explicit(&w->seen_off, memory_order_acquire);
+	if (seen_off & WRAP_LOCK_BIT) {
+		SPINLOCK_BACKOFF(count);
+		goto retry;
+	}
+	return seen_off;
 }
 
 /*
@@ -200,7 +215,8 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		seen = stable_nextoff(rbuf);
 		next = seen & RBUF_OFF_MASK;
 		ASSERT(next < rbuf->space);
-		w->seen_off = next | WRAP_LOCK_BIT;
+		atomic_store_explicit(&w->seen_off, next | WRAP_LOCK_BIT,
+		    memory_order_relaxed);
 
 		/*
 		 * Compute the target offset.  Key invariant: we cannot
@@ -210,7 +226,8 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		written = rbuf->written;
 		if (__predict_false(next < written && target >= written)) {
 			/* The producer must wait. */
-			w->seen_off = RBUF_OFF_MAX;
+			atomic_store_explicit(&w->seen_off,
+			    RBUF_OFF_MAX, memory_order_release);
 			return -1;
 		}
 
@@ -229,7 +246,8 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 			 */
 			target = exceed ? (WRAP_LOCK_BIT | len) : 0;
 			if ((target & RBUF_OFF_MASK) >= written) {
-				w->seen_off = RBUF_OFF_MAX;
+				atomic_store_explicit(&w->seen_off,
+				    RBUF_OFF_MAX, memory_order_release);
 				return -1;
 			}
 			/* Increment the wrap-around counter. */
@@ -238,13 +256,16 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 			/* Preserve the wrap-around counter. */
 			target |= seen & WRAP_COUNTER;
 		}
-	} while (!atomic_compare_exchange_weak(&rbuf->next, seen, target));
+	} while (!atomic_compare_exchange_weak(&rbuf->next, &seen, target));
 
 	/*
 	 * Acquired the range.  Clear WRAP_LOCK_BIT in the 'seen' value
 	 * thus indicating that it is stable now.
+	 *
+	 * No need for memory_order_release, since CAS issued a fence.
 	 */
-	w->seen_off &= ~WRAP_LOCK_BIT;
+	atomic_store_explicit(&w->seen_off, w->seen_off & ~WRAP_LOCK_BIT,
+	    memory_order_relaxed);
 
 	/*
 	 * If we set the WRAP_LOCK_BIT in the 'next' (because we exceed
@@ -262,9 +283,8 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		 * Unlock: ensure the 'end' offset reaches global
 		 * visibility before the lock is released.
 		 */
-		atomic_thread_fence(memory_order_release);
 		atomic_store_explicit(&rbuf->next,
-		    (target & ~WRAP_LOCK_BIT), memory_order_relaxed);
+		    (target & ~WRAP_LOCK_BIT), memory_order_release);
 	}
 	ASSERT((target & RBUF_OFF_MASK) <= rbuf->space);
 	return (ssize_t)next;
@@ -280,8 +300,7 @@ ringbuf_produce(ringbuf_t *rbuf, ringbuf_worker_t *w)
 	(void)rbuf;
 	ASSERT(w->registered);
 	ASSERT(w->seen_off != RBUF_OFF_MAX);
-	atomic_thread_fence(memory_order_release);
-	atomic_store_explicit(&w->seen_off, RBUF_OFF_MAX, memory_order_relaxed);
+	atomic_store_explicit(&w->seen_off, RBUF_OFF_MAX, memory_order_release);
 }
 
 /*
@@ -316,21 +335,17 @@ retry:
 
 	for (unsigned i = 0; i < rbuf->nworkers; i++) {
 		ringbuf_worker_t *w = &rbuf->workers[i];
-		unsigned count = SPINLOCK_BACKOFF_MIN;
 		ringbuf_off_t seen_off;
 
-		/* Skip if the worker has not registered. */
-		if (!w->registered) {
-			continue;
-		}
-
 		/*
+		 * Skip if the worker has not registered.
+		 *
 		 * Get a stable 'seen' value.  This is necessary since we
 		 * want to discard the stale 'seen' values.
 		 */
-		while ((seen_off = w->seen_off) & WRAP_LOCK_BIT) {
-			SPINLOCK_BACKOFF(count);
-		}
+		if (!atomic_load_explicit(&w->registered, memory_order_relaxed))
+			continue;
+		seen_off = stable_seenoff(w);
 
 		/*
 		 * Ignore the offsets after the possible wrap-around.
@@ -364,12 +379,14 @@ retry:
 			 */
 			if (rbuf->end != RBUF_OFF_MAX) {
 				rbuf->end = RBUF_OFF_MAX;
-				atomic_thread_fence(memory_order_release);
 			}
-			/* Wrap-around the consumer and start from zero. */
+
+			/*
+			 * Wrap-around the consumer and start from zero.
+			 */
 			written = 0;
 			atomic_store_explicit(&rbuf->written,
-			    written, memory_order_relaxed);
+			    written, memory_order_release);
 			goto retry;
 		}
 
